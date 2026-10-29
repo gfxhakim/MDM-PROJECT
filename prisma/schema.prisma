@@ -1,0 +1,281 @@
+// MDM PROJECT — unified schema
+// Implements the platform core (contacts, conversations, tickets, audit, config)
+// plus the Onboarding Agent (onboarding_task) and Account Manager (am_task) modules.
+// SQLite for development; switch provider to "postgresql" for production.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// ───────────────────────── Users & roles ─────────────────────────
+// role: OA_AGENT | SHIFT_LEAD | MANAGER | ADMIN | ACCOUNT_MANAGER | READ_ONLY
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String
+  passwordHash   String
+  role           String
+  markets        String    @default("[]") // JSON array of country codes (skills / AM market)
+  businessNumber String?   // AM: the WhatsApp business number the book runs on
+  shiftMinutes   Int       @default(480)
+  active         Boolean   @default(true)
+  onCall         Boolean   @default(false) // Yeastar presence; manual toggle until PBX wired
+  lastAssignedAt DateTime? // AM assignment tie-break
+  createdAt      DateTime  @default(now())
+
+  contactsOwned  Contact[] @relation("ContactOwner")
+  ticketsAssigned Ticket[] @relation("TicketAssignee")
+  sellersManaged Seller[]  @relation("SellerAM")
+  messages       Message[]
+}
+
+// ───────────────────────── Platform core ─────────────────────────
+// contactType: merchant (pre-activation) | seller (activated) | end_customer | internal
+model Contact {
+  id           String    @id @default(cuid())
+  name         String
+  nameAr       String?
+  phone        String    @unique // E.164
+  country      String    // LY | IQ | LB ...
+  contactType  String    @default("merchant")
+  ownerAgentId String?
+  ownerAgent   User?     @relation("ContactOwner", fields: [ownerAgentId], references: [id])
+  optedOut     Boolean   @default(false)
+  blocked      Boolean   @default(false)
+  blockReason  String?
+  sourceUtm    String?   // channel + UTM / affiliate tag, immutable after creation
+  legacy       Boolean   @default(false) // imported from Zoho
+  createdAt    DateTime  @default(now())
+
+  conversations Conversation[]
+  tickets       Ticket[]
+  seller        Seller?
+}
+
+model Conversation {
+  id             String    @id @default(cuid())
+  contactId      String
+  contact        Contact   @relation(fields: [contactId], references: [id])
+  channel        String    @default("whatsapp") // whatsapp | voice | portal | email
+  businessNumber String? // the company number the thread runs on
+  lastInboundAt  DateTime? // drives the 24h session window
+  lastOutboundAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  messages Message[]
+
+  @@index([contactId])
+}
+
+// direction: in | out ; kind: text | template | call_event | note | system
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  direction      String
+  kind           String   @default("text")
+  body           String
+  templateKey    String?
+  billable       Boolean  @default(false)
+  authorUserId   String?
+  author         User?    @relation(fields: [authorUserId], references: [id])
+  legacy         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+// ───────────────────────── Tickets (both modules) ─────────────────────────
+// type: onboarding_task | am_task
+// OA statuses: new | failed_to_contact | prequalified | qualified | activated | cold_lead | junk_lead
+// AM task status: open | done
+// OA stage: first_contact | walkthrough | documents | activation | done
+model Ticket {
+  id         String    @id @default(cuid())
+  type       String
+  contactId  String
+  contact    Contact   @relation(fields: [contactId], references: [id])
+  assigneeId String?
+  assignee   User?     @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  status     String
+  priority   String    @default("normal") // urgent | high | normal | low
+  dueAt      DateTime?
+  createdAt  DateTime  @default(now())
+  closedAt   DateTime?
+
+  // ── onboarding_task fields (spec OA 2.3) ──
+  stage          String?
+  attemptNo      Int      @default(0)
+  nextAttemptAt  DateTime?
+  followupNo     Int      @default(0)
+  nextFollowupAt DateTime?
+  cadenceReset   Boolean  @default(false)
+  holdReason     String?  // never null while unassigned
+  walkthroughAt  DateTime?
+  walkthroughMode String? // phone | meet | whatsapp_video
+  qualification  String   @default("{}") // JSON: 5 booleans (OA 8.1)
+  handoffRecord  String   @default("{}") // JSON: 8 fields (OA 2.6)
+  firstOrderAt   DateTime? // written by order-domain event only
+
+  // ── am_task fields (spec AM 2.2) ──
+  sellerId  String?
+  seller    Seller?  @relation(fields: [sellerId], references: [id])
+  taskType  String?  // welcome | checkin | intervention | save | qbr | coach | expansion | coord
+  title     String?
+  why       String?  // required on am_task — the numbers that produced it
+  ruleId    String?  // dedup key (AM 2.5)
+  alertKey  String?
+  escalated Boolean  @default(false)
+  escalationReason String?
+  outcome   String?  // required to close an am_task
+
+  @@index([type, status, assigneeId])
+  @@index([contactId])
+  @@index([sellerId, status])
+  @@index([dueAt])
+}
+
+// ───────────────────────── Seller record (AM module) ─────────────────────────
+// joinStatus: pending | accepted | rejected ; stage + health are DERIVED, cached here (never user-writable)
+model Seller {
+  id                       String    @id @default(cuid())
+  mdmRef                   String    @unique // e.g. MDM-S-0207 (id on the client's MDM platform)
+  contactId                String    @unique
+  contact                  Contact   @relation(fields: [contactId], references: [id])
+  market                   String
+  joinStatus               String    @default("pending")
+  activatedAt              DateTime?
+  assignedAccountManagerId String?
+  accountManager           User?     @relation("SellerAM", fields: [assignedAccountManagerId], references: [id])
+
+  // read-only mirror of the MDM platform (synced via API connector or import)
+  weeklyOrders        String  @default("[]") // JSON array of 8 ints, weeks 1..8 (oldest first)
+  deliveryRate        Float   @default(0)
+  returnRate          Float   @default(0)
+  cancelRate          Float   @default(0)
+  wallet              Float   @default(0)
+  walletNegativeDays  Int     @default(0)
+  products            Int     @default(0)
+  marketsServed       Int     @default(1)
+  momGrowthPct        Float   @default(0)
+  lastOrderAt         DateTime?
+  // Feature F5 (not yet written by MDM platform — Engagement fallback applies)
+  lastLoginAt         DateTime?
+  lastStoreUpdateAt   DateTime?
+  lastProductAddedAt  DateTime?
+
+  lastContactAt  DateTime?
+  lastReviewAt   DateTime?
+  churnedAt      DateTime? // set by hand until D-04 structured outcome exists
+  welcomeCallAt  DateTime?
+
+  // cached derived values (recompute job output; inputs stored for explainability)
+  stage            String   @default("New")
+  healthScore      Int?
+  healthBand       String?
+  healthComponents String   @default("{}") // JSON: per-component score/weight/sentence/inputs
+  healthComputedAt DateTime?
+  healthStale      Boolean  @default(false)
+
+  tasks            Ticket[]
+  healthHistory    HealthHistory[]
+  playbookProgress PlaybookProgress[]
+
+  @@index([assignedAccountManagerId])
+  @@index([market, joinStatus])
+}
+
+model HealthHistory {
+  id         String   @id @default(cuid())
+  sellerId   String
+  seller     Seller   @relation(fields: [sellerId], references: [id])
+  date       DateTime
+  score      Int
+  band       String
+  components String   // JSON snapshot
+  @@index([sellerId, date])
+}
+
+// 30-day playbook (AM 6.1): step state; gates evaluated live, never stored as truth
+model PlaybookProgress {
+  id           String    @id @default(cuid())
+  sellerId     String
+  seller       Seller    @relation(fields: [sellerId], references: [id])
+  stepDay      Int       // 0,1,3,5,7,14,21,30
+  taskTicketId String?
+  tickedAt     DateTime?
+  tickedById   String?
+  @@unique([sellerId, stepDay])
+}
+
+// ───────────────────────── Configuration (versioned, snapshot not diff) ─────────────────────────
+model ConfigVersion {
+  id        Int      @id @default(autoincrement())
+  authorId  String?
+  note      String?
+  diff      String   // JSON: {key: {before, after}}
+  snapshot  String   // JSON: FULL configuration (rollback restores this exactly)
+  createdAt DateTime @default(now())
+}
+
+model ConfigDraft {
+  id        String   @id @default("draft") // single-row table
+  changes   String   @default("{}") // JSON pending {key: value}
+  authorId  String?
+  updatedAt DateTime @updatedAt
+}
+
+// ───────────────────────── Templates & macros ─────────────────────────
+// Meta WhatsApp templates. status: pending | approved | rejected
+model Template {
+  id        String  @id @default(cuid())
+  key       String  @unique
+  module    String  // oa | am
+  category  String  @default("utility") // marketing prohibited on the onboarding number
+  bodyEn    String
+  bodyAr    String?
+  status    String  @default("pending")
+  enabled   Boolean @default(true)
+}
+
+model Macro {
+  id         String  @id @default(cuid())
+  module     String  // oa | am
+  scope      String  @default("team") // team | personal
+  ownerId    String?
+  name       String
+  actions    String  @default("{}") // JSON ticket changes
+  insertText String  @default("")
+  usageCount Int     @default(0)
+}
+
+model SavedView {
+  id      String  @id @default(cuid())
+  module  String
+  scope   String  @default("system") // system | team | personal
+  ownerId String?
+  name    String
+  filters String  @default("{}")
+  sort    String?
+}
+
+// ───────────────────────── Immutable event log (single audit trail) ─────────────────────────
+model EventLog {
+  id         String   @id @default(cuid())
+  actorId    String?  // null = system/rule
+  entityType String   // ticket | contact | seller | config | conversation | user
+  entityId   String
+  action     String
+  before     String?  // JSON
+  after      String?  // JSON
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
