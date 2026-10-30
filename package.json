@@ -1,27 +1,29 @@
 {
   "name": "mdm-project",
   "version": "0.1.0",
-  "description": "MDM Express — Onboarding Agent + Account Manager web app (built on one support-platform core)",
+  "description": "MDM Express \u2014 Onboarding Agent + Account Manager web app (built on one support-platform core)",
   "type": "module",
   "scripts": {
     "dev": "node --env-file-if-exists=.env src/server.js",
-    "start": "NODE_ENV=production node --env-file-if-exists=.env src/server.js",
+    "start": "node scripts/start.js",
     "db:push": "prisma db push",
     "db:seed": "node --env-file-if-exists=.env prisma/seed.js",
     "db:demo": "node --env-file-if-exists=.env prisma/demo.js",
-    "test": "node --test \"tests/**/*.test.js\""
+    "test": "node --test \"tests/**/*.test.js\"",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^2.4.3",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
-    "jsonwebtoken": "^9.0.2"
-  },
-  "devDependencies": {
+    "jsonwebtoken": "^9.0.2",
     "prisma": "^5.22.0"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

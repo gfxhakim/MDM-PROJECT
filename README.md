@@ -28,6 +28,23 @@ Both consoles are the reference prototypes (`reference/*.html`, normative for la
 served unchanged apart from removing their in-browser demo data; `public/assets/*-adapter.js` wires
 every view and action to the API. The `العربية` button switches the UI to Arabic, right-to-left.
 
+## Deploy (Railway)
+
+`npm start` runs `scripts/start.js`. It updates the database schema, seeds the configuration,
+team, templates and macros (idempotent), then starts the server on `PORT`.
+
+1. Add a **Volume** to the service, mounted at `/data`. The SQLite database and the sign-in secret
+   live there; without it they are wiped on every redeploy.
+2. Variables (all optional — sensible defaults apply):
+   - `SEED_PASSWORD` — the first password for the seeded accounts. If unset, a random one is
+     printed once in the first deploy log (`Users: 10 created … Initial password: …`).
+   - `JWT_SECRET` — otherwise generated once and kept on the volume.
+   - `DATABASE_URL` — otherwise `file:/data/mdm.db`.
+   - Integration keys from `.env.example` when the client provides them.
+3. **Settings → Networking → Generate Domain** so the service is reachable.
+
+Health check: `GET /api/health` (configured in `railway.json`).
+
 ## Integrations
 
 All optional. Each one is configured by environment variables (see `.env.example`); without them the

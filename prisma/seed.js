@@ -8,8 +8,10 @@ import { hashPassword } from '../src/auth/service.js';
 const config = await seedDefaults();
 console.log(config.created ? `Configuration v${config.version} written from Appendix D defaults.` : `Configuration already at v${config.version}; left unchanged.`);
 
-// Dev-only password for every seeded account. Set SEED_PASSWORD to override; never use in production.
-const password = process.env.SEED_PASSWORD ?? 'mdm-dev-2026';
+// Password for the seeded accounts: SEED_PASSWORD if set; in development the known dev password; in
+// production a random one, printed once in the deploy log when the accounts are first created.
+const password = process.env.SEED_PASSWORD
+  ?? (process.env.NODE_ENV === 'production' ? (await import('node:crypto')).randomBytes(9).toString('base64url') : 'mdm-dev-2026');
 const USERS = [
   { email: 'admin@mdm.local', name: 'Haithem', role: 'ADMIN', markets: ['LY', 'LB', 'IQ'] },
   { email: 'manager@mdm.local', name: 'Onboarding Manager', role: 'MANAGER', markets: ['LY', 'LB', 'IQ'] },
@@ -31,7 +33,7 @@ for (const u of USERS) {
   await prisma.user.create({ data: { ...u, markets: JSON.stringify(u.markets), passwordHash } });
   created++;
 }
-console.log(`Users: ${created} created, ${USERS.length - created} already present.${created ? ` Dev password: ${password}` : ''}`);
+console.log(`Users: ${created} created, ${USERS.length - created} already present.${created ? ` Initial password: ${password} (set SEED_PASSWORD to choose your own).` : ''}`);
 // Launch templates (OA 7.5, AM 7.6) — wording from the prototypes. All utility category.
 // Seeded as approved for development; the WhatsApp connector (step 9) syncs real Meta status.
 const TEMPLATES = [
