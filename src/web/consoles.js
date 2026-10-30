@@ -20,6 +20,7 @@ const TAIL = (adapter) => `
 <script src="/assets/api.js"></script>
 <script src="/assets/i18n.js"></script>
 <script src="/assets/i18n-ar.js"></script>
+<script src="/assets/presence.js"></script>
 <script src="/assets/${adapter}"></script>
 </html>`;
 
@@ -27,6 +28,13 @@ const TAIL = (adapter) => `
 // call into the adapter (window.MDM), which renders the server's numbers — or says plainly that a
 // module has no data yet — so nothing on screen is invented.
 const OA_REPLACEMENTS = [
+  // exports: real CSV from the same numbers the screen shows (AC-OA-18)
+  ["onclick=\"toast('Exported — CSV export is permission-gated')\"", "onclick=\"MDM.exportCsv('performance')\""],
+  ["onclick=\"toast('Export — permission-gated, one audit entry')\"", "onclick=\"MDM.exportCsv('leads')\""],
+  // collision detection: the demo flag → live presence (AC-OA-13)
+  ["const collide = l.id==='L5';   // demo: another agent is looking at this one", 'const collide = Presence.watch(l.convId);'],
+  ["${collide?`<div class=\"collide\">${ic('users',13)} Noor Al-Saadi is viewing this conversation right now.</div>`:''}",
+    "<div id=\"mdm-collide\">${collide?`<div class=\"collide\">${ic('users',13)} ${esc(collide)}</div>`:''}</div>"],
   ["${[['r3','No-answer reminders created',12],['r5','Follow-up templates sent',4],\n           ['r4','Moved to Cold Lead',2],['r1','New leads captured and assigned',5],['r8','Held leads assigned when capacity freed',1]]",
     "${[['r3','No-answer reminders created'],['r5','Follow-up templates sent'],\n           ['r4','Moved to Cold Lead'],['r1','New leads captured and assigned'],['r8','Held leads assigned when capacity freed']].map(([id,t])=>[id,t,(A.ruleRuns||{})[id]||0])"],
   ["<div><b>Read this before acting on it.</b> Karim's activation rate is 62% against Salma's 70%, but his average time to first contact is 11.2 hours against her 6.4.\n      Speed to first contact is the strongest predictor in this table — the coaching target is the cadence discipline, not the closing skill.</div>",
@@ -53,6 +61,13 @@ const OA_REPLACEMENTS = [
   ["const total=Object.values(TPL_STATE).reduce((a,b)=>a+b.used,0);", "const total=Object.values(TPL_STATE).reduce((a,b)=>a+b.used,0)||1;"],
 ];
 
+// Both prototypes write the composer's placeholder as real text, so a typed reply would begin with
+// "Write a reply…". The box starts empty and the placeholder is drawn by CSS instead.
+const COMMON_REPLACEMENTS = [
+  ['.comp-box.filled{color:var(--ink)}', '.comp-box.filled{color:var(--ink)}\n.comp-box[contenteditable]{color:var(--ink)}\n.comp-box[contenteditable]:empty::before{content:attr(data-placeholder);color:var(--muted2)}'],
+  ['oninput="S.draft=this.textContent">${esc(S.draft)||\'Write a reply…\'}</div>', 'data-placeholder="Write a reply…" oninput="S.draft=this.textContent">${esc(S.draft)}</div>'],
+];
+
 function buildOa() {
   const file = 'reference/mdm-oa-console.html';
   let h = readFileSync(join(root, file), 'utf8');
@@ -63,13 +78,21 @@ function buildOa() {
   h = replaceOnce(h, "let S={leads:SEED.map(build),", "let S={leads:[],", file);
   h = replaceOnce(h, "try{const raw=localStorage.getItem(KEY); if(raw){const p=JSON.parse(raw); if(p&&p.leads&&p.leads.length) S.leads=p.leads;}}catch(e){}", '', file);
   h = replaceOnce(h, '/* =============== boot =============== */\nrender();', '/* boot: /assets/oa-adapter.js */', file);
-  for (const [from, to] of OA_REPLACEMENTS) h = replaceOnce(h, from, to, file);
+  for (const [from, to] of [...COMMON_REPLACEMENTS, ...OA_REPLACEMENTS]) h = replaceOnce(h, from, to, file);
   return HEAD + h + TAIL('oa-adapter.js');
 }
 
 // The AM console derives health, stage, playbook gates and capacity in the browser; the adapter
 // replaces each with the server's values (AM 4.2: derived, never computed or written client-side).
 const AM_REPLACEMENTS = [
+  // AC-27: an indicator whose source is not connected says so (the prototype only flagged the survey)
+  ["${r.src==='survey'?' — not wired yet':''}", "${(r.src==='survey'||kpiVal(P,r.k)==='—')?' — not wired yet':''}"],
+  // Audit & Quality: the two checks the prototype fixed at 0 are counted by the server (AC-02)
+  ["{t:'Sellers with no account manager', v:0,", "{t:'Sellers with no account manager', v:MDM.quality('unassigned'),"],
+  ["{t:'Escalations with no note', v:0,", "{t:'Escalations with no note', v:MDM.quality('escalationsNoNote'),"],
+  ['const collide = s.id===S.sellers.filter(x=>x.amId!==ME)[3]?.id;', 'const collide = Presence.watch(s.convId);'],
+  ["${collide?`<div class=\"collide\">${ic('users',13)} ${esc(am(s.amId).name)} is viewing this conversation right now.</div>`:''}",
+    "<div id=\"mdm-collide\">${collide?`<div class=\"collide\">${ic('users',13)} ${esc(collide)}</div>`:''}</div>"],
   ["const ME = 'am1';", "let ME = 'am1';"],
   ['const TEAM = [', 'let TEAM = ['],
   ['const canEdit = s =>', 'let canEdit = s =>'],
@@ -97,7 +120,7 @@ const AM_REPLACEMENTS = [
 function buildAm() {
   const file = 'reference/mdm-am-console_6.html';
   let h = readFileSync(join(root, file), 'utf8');
-  for (const [from, to] of AM_REPLACEMENTS) h = replaceOnce(h, from, to, file);
+  for (const [from, to] of [...COMMON_REPLACEMENTS, ...AM_REPLACEMENTS]) h = replaceOnce(h, from, to, file);
   return HEAD + h + TAIL('am-adapter.js');
 }
 

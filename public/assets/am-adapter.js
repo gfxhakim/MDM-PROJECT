@@ -161,6 +161,7 @@
   const protoKpiPct = window.kpiPct;
   window.kpiPct = (r, v) => (typeof v === 'number' ? protoKpiPct(r, v) : 0);
   X.pct = (v) => (v === null || v === undefined ? '—' : `${v}%`);
+  X.quality = (k) => X.analytics?.quality?.[k] ?? 0;
   X.accepted = () => X.analytics?.coverage?.acceptedSellers ?? S.sellers.length;
   X.covered = () => X.analytics?.coverage?.withManager ?? S.sellers.filter((s) => s.amId).length;
   X.series = (k) => { const t = X.analytics?.trend; if (!t) return []; return t.weeks.map((w, i) => ({ k: w, v: t[k]?.[i] })).filter((p) => typeof p.v === 'number'); };

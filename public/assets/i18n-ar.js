@@ -1704,3 +1704,19 @@ window.I18N_AR_PATTERNS = (window.I18N_AR_PATTERNS || []).concat([
   [/^Closed in Zoho \((.+)\) — not reopened as a lead\.$/, (_, s) => `مغلق في Zoho (${s}) — لا يُعاد فتحه كعميل محتمل.`],
   [/^Last sync: (.+)$/, (_, s) => `آخر مزامنة: ${s}`],
 ]);
+// Collision banner (presence.js).
+window.I18N_AR_PATTERNS = window.I18N_AR_PATTERNS.concat([
+  [/^(.+?)(?: and (\d+) more)? is viewing this conversation right now\.$/, (_, n, m) => `${n}${m ? ` و${m} آخرون` : ''} يطّلع على هذه المحادثة الآن.`],
+  [/^(.+?)(?: and (\d+) more)? is replying in this conversation right now\.$/, (_, n, m) => `${n}${m ? ` و${m} آخرون` : ''} يكتب ردًا في هذه المحادثة الآن.`],
+]);
+Object.assign(window.I18N_AR, {
+  'Exported — one audit entry': 'تم التصدير — قيد تدقيق واحد',
+  'Needs approval from an Admin.': 'يحتاج موافقة من المسؤول (Admin).',
+});
+// Composer and session-window strings.
+Object.assign(window.I18N_AR, { 'Send': 'إرسال', 'Call': 'اتصال', 'yesterday': 'أمس', 'Write a reply…': window.I18N_AR['Write a reply…'] || 'اكتب ردًا…', 'Template only': 'قوالب فقط' });
+window.I18N_AR_PATTERNS = window.I18N_AR_PATTERNS.concat([
+  [/^WhatsApp window open — (\d+)h (\d+)m free reply\. Free-form replies allowed\.$/, (_, h, m) => `نافذة واتساب مفتوحة — ${h}س ${m}د للرد المجاني. الردود الحرة مسموحة.`],
+  [/^(\d+)h (\d+)m free reply$/, (_, h, m) => `${h}س ${m}د للرد المجاني`],
+  [/^registered (yesterday|today)$/, (_, d) => `سُجّل ${d === 'today' ? 'اليوم' : 'أمس'}`],
+]);

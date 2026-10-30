@@ -5,7 +5,7 @@
 (function () {
   const KEY = 'mdm.lang';
   const ORIGINAL = new Map(); // text node → English source (kept so switching back restores it)
-  const ATTRS = ['placeholder', 'title', 'aria-label'];
+  const ATTRS = ['placeholder', 'data-placeholder', 'title', 'aria-label'];
   const SKIP = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'CODE']);
   let lang = 'en';
   try { lang = localStorage.getItem(KEY) || 'en'; } catch { /* private mode */ }

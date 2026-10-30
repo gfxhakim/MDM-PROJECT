@@ -37,7 +37,7 @@ amRouter.get('/coverage', requirePermission('am.performance_team'), ah(async (_r
 // Head of AM sees every manager; an AM sees their own performance row only (AM Appendix A).
 amRouter.get('/analytics', requirePermission('am.performance_own'), ah(async (req, res) => {
   const a = await amAnalytics();
-  if (!grant(req.user.role, 'am.performance_team')) a.perf = { [req.user.id]: a.perf[req.user.id] ?? null };
+  if (!grant(req.user.role, 'am.performance_team')) { a.perf = { [req.user.id]: a.perf[req.user.id] ?? null }; delete a.quality; }
   res.json(a);
 }));
 amRouter.post('/sweep', requirePermission('am.rule_sweep'), ah(async (req, res) => {

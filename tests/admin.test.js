@@ -71,7 +71,7 @@ test('bulk actions need a reason, and an agent cannot reassign through bulk eith
   const noReason = await app.call('POST', '/api/oa/bulk', { token: await tok('lead'), body: { op: 'reassign', ticketIds: [a.id], toUserId: U.karim.id } });
   assert.equal(noReason.status, 400);
   const agent = await app.call('POST', '/api/oa/bulk', { token: await tok('salma'), body: { op: 'reassign', ticketIds: [a.id], toUserId: U.salma.id, reason: 'mine' } });
-  assert.equal(agent.body.succeeded, 0);
+  assert.equal(agent.status, 403);
   assert.equal((await prisma.ticket.findUnique({ where: { id: a.id } })).assigneeId, U.salma.id);
 });
 

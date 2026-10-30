@@ -84,5 +84,10 @@ export async function amAnalytics({ now = new Date(), db = prisma } = {}) {
       qbrDone: qbr.filter((t) => t.status === 'done').length, qbrDue: qbr.length,
     };
   }
-  return { coverage: await coverage(c, db), trend, perf, quarterStart };
+  // Audit & Quality checks (AM Part 11): counted from the record, not asserted.
+  const quality = {
+    unassigned: sellers.filter((s) => !s.assignedAccountManagerId).length,
+    escalationsNoNote: await db.ticket.count({ where: { type: 'am_task', escalated: true, OR: [{ escalationReason: null }, { escalationReason: '' }] } }),
+  };
+  return { coverage: await coverage(c, db), trend, perf, quarterStart, quality };
 }

@@ -508,6 +508,17 @@
 
   // ───────────── admin panels that read the record ─────────────
   const pctOf = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+  // CSV export (Admin; a Manager needs Admin approval — the server says so). One audit entry each.
+  X.exportCsv = async function (kind) {
+    try {
+      const res = await fetch(`/api/oa/export/${kind}?days=${(typeof A !== 'undefined' && A.windowDays) || 90}`, { headers: { authorization: `Bearer ${API.session()?.token}` } });
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new API.ApiError(res.status, b); }
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement('a'); a.href = url; a.download = `onboarding-${kind}.csv`; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast('Exported — one audit entry', 'ok');
+    } catch (e) { fail(e); }
+  };
   X.perfInsight = function () {
     const ag = (A.agents || []).filter((a) => a.reg > 0);
     if (ag.length < 2) return 'Too few leads in this window to compare agents yet — the comparison appears once each agent has worked leads.';

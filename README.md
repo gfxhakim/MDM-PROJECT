@@ -51,3 +51,7 @@ one audited run.
 ```bash
 npm test
 ```
+
+The acceptance criteria from both specs (AC-OA-1..24, AC-01..27) each have a test named after them in
+`tests/acceptance-*.test.js`; `docs/acceptance.md` maps each one and lists what still needs a live
+demonstration (two-person and settings-by-Operations criteria).

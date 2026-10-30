@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { ah, forbidden } from '../http/errors.js';
 import { prisma } from '../db.js';
+import { heartbeat } from '../core/presence.js';
 import { findContact, listContacts, receiveInbound, setBlocked, setOptedOut } from '../core/contacts.js';
 import * as conv from '../core/conversations.js';
 import { getTicket, listTickets } from '../core/tickets.js';
@@ -46,6 +47,12 @@ coreRouter.get('/contacts/:id/conversation', ah(async (req, res) => {
 }));
 coreRouter.get('/conversations/:id', ah(async (req, res) => {
   res.json(await conv.getConversation(req.user, req.params.id));
+}));
+
+// Collision detection: heartbeat while the conversation is open; returns the others on it.
+coreRouter.post('/conversations/:id/presence', ah(async (req, res) => {
+  const c = await conv.findConversation(req.user, req.params.id); // read scope: foreign → not-found
+  res.json({ others: heartbeat(c.id, req.user, req.body?.state) });
 }));
 
 // One send path for every console: kind = text | template | note.

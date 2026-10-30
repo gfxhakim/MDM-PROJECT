@@ -176,6 +176,10 @@ export async function logCall(user, ticketId, outcome, note, { now = new Date(),
       defaultNote = outcome === 'answered_strong' ? 'Answered — strong lead.' : 'Answered — soft lead.';
     }
     const updated = await changeTicket(tx, t, data, { actorId: user.id, action: 'ticket.call_logged', reason: outcome });
+    if (data.status === 'cold_lead') {
+      // The cutoff is the rule's move, not the agent's: logged with its reason (AC-OA-6).
+      await logEvent({ entityType: 'ticket', entityId: t.id, action: 'ticket.status_changed', before: { status: t.status }, after: { status: 'cold_lead' }, reason: `r4 — ${defaultNote}` }, tx);
+    }
     const conv = await conversationOf(t.contactId, tx);
     if (conv) await tx.message.create({ data: { conversationId: conv.id, direction: 'internal', kind: 'note', body: note?.trim() || defaultNote, authorUserId: user.id } });
     return updated;
@@ -422,6 +426,7 @@ export async function bulk(user, { op, ticketIds, ...params }, db = prisma) {
   if (!Array.isArray(ticketIds) || !ticketIds.length) throw badRequest('ticketIds must be a non-empty list.');
   if (ticketIds.length > 200) throw badRequest('At most 200 tickets per bulk run.');
   if (!params.reason || !String(params.reason).trim()) throw badRequest('A written reason is required for a bulk action.');
+  if (!grant(user.role, 'onboarding.bulk_internal')) throw forbidden(denialReason(user, 'onboarding.bulk_internal'));
   const results = [];
   for (const id of ticketIds) {
     try {

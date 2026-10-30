@@ -7,7 +7,7 @@ import { getLiveConfig } from '../config/service.js';
 import { grant } from '../auth/permissions.js';
 import { denialReason, findSellerInScope, sellerCan, sellerWhere } from '../auth/scope.js';
 import { badRequest, forbidden, HttpError, notFound } from '../http/errors.js';
-import { notify } from '../core/notifications.js';
+import { notify, notifyRole } from '../core/notifications.js';
 import { addSystemLine } from '../core/conversations.js';
 import { computeHealth } from './health.js';
 import { capacityFor, managerCapacity, taskMinutes } from './capacity.js';
@@ -150,6 +150,8 @@ export async function escalateTask(user, taskId, reason, db = prisma) {
     });
     await logEvent({ actorId: user.id, entityType: 'ticket', entityId: t.id, action: 'am_task.escalated',
       before: { priority: t.priority }, after: { priority: updated.priority, escalatesTo: ALERTS[t.alertKey]?.escalatesTo ?? null }, reason }, tx);
+    // The next owner is told (AC-13); ownership and the conversation are untouched.
+    await notifyRole('ADMIN', { kind: 'am.task_escalated', title: `Escalated: ${t.title} — ${seller.contact?.name ?? seller.mdmRef}`, body: reason.trim(), ticketId: t.id, dedupeKey: `am.escalated:${t.id}` }, tx);
     return updated;
   });
 }

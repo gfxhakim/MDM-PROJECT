@@ -7,7 +7,7 @@
 // time passing changes nothing.
 import { prisma } from '../db.js';
 import { getLiveConfig } from '../config/service.js';
-import { sendTemplate } from '../core/conversations.js';
+import { addSystemLine, sendTemplate } from '../core/conversations.js';
 import { notify, notifyRole } from '../core/notifications.js';
 import { TICKET_TYPES } from '../core/ticketTypes.js';
 import { businessMinutesBetween, hoursFromConfig, isBusinessTime } from './businessHours.js';
@@ -18,6 +18,7 @@ const OPEN = TICKET_TYPES.onboarding_task.openStatuses;
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const tagsOf = (t) => JSON.parse(t.tags ?? '[]');
+const SUPPRESSED = 'oa_followup_suppressed';
 const withTag = (t, tag) => JSON.stringify([...new Set([...tagsOf(t), tag])]);
 
 async function withConversations(db, where) {
@@ -74,10 +75,17 @@ export async function runOnboardingSweep({ db = prisma, config, now = new Date()
         await sendTemplate(null, conv.id, 'oa_nudge_v2', [t.contact.name], { now, automated: true, ruleId: 'r5', config: c, silent: simulate }, db);
       } catch (err) {
         out.r5Skipped.push({ ticketId: t.id, reason: err.message });
+        // AC-OA-8: the suppression is visible on the lead, not silent — once per follow-up number.
+        if (!simulate && !tagsOf(t).includes(SUPPRESSED)) {
+          const n = t.followupNo + 1;
+          await changeTicket(db, t, { tags: withTag(t, SUPPRESSED) }, { action: 'ticket.followup_suppressed', reason: `r5 — follow-up ${n} of ${c['oa.quiet_max']} not sent: ${err.message}` });
+          await addSystemLine(conv.id, `Follow-up ${n} of ${c['oa.quiet_max']} was not sent — ${err.message}`, db);
+          await notify({ userId: t.assigneeId, kind: 'oa.r5.suppressed', title: `Follow-up not sent to ${t.contact.name}`, body: err.message, ticketId: t.id, dedupeKey: `oa.r5.suppressed:${t.id}:${n}` }, db);
+        }
         continue;
       }
       const next = new Date(now.getTime() + c['oa.quiet_gap'] * DAY);
-      await changeTicket(db, t, { followupNo: t.followupNo + 1, nextFollowupAt: next, dueAt: next },
+      await changeTicket(db, t, { followupNo: t.followupNo + 1, nextFollowupAt: next, dueAt: next, tags: JSON.stringify(tagsOf(t).filter((x) => x !== SUPPRESSED)) },
         { action: 'ticket.followup_sent', reason: `r5 — follow-up ${t.followupNo + 1} of ${c['oa.quiet_max']}` });
       out.r5++;
     }

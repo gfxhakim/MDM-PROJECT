@@ -1,5 +1,6 @@
 // Onboarding Agent API. Every action re-checks scope and the ticket's state in the service.
 import { Router } from 'express';
+import { exportOnboarding } from '../oa/export.js';
 import { ah, forbidden } from '../http/errors.js';
 import { prisma } from '../db.js';
 import { getLiveConfig } from '../config/service.js';
@@ -12,7 +13,7 @@ import { activationGate } from '../oa/stateMachine.js';
 import { availability, onboardingAgents } from '../oa/capacity.js';
 import { runOnboardingSweep } from '../oa/rules.js';
 import { onboardingBudget } from '../core/templates.js';
-import { onboardingReadWhere } from '../auth/scope.js';
+import { denialReason, onboardingReadWhere } from '../auth/scope.js';
 import { redact } from '../auth/permissions.js';
 import { pickAccountManager } from '../am/handover.js';
 import { onboardingAnalytics } from '../oa/analytics.js';
@@ -27,6 +28,13 @@ oaRouter.get('/analytics', ah(async (req, res) => {
   const a = await onboardingAnalytics({ days: Math.min(Math.max(Number(req.query.days) || 90, 7), 365) });
   if (scope === 'own') a.agents = a.agents.filter((x) => x.id === req.user.id);
   res.json(a);
+}));
+
+// CSV export of the Performance table or the lead list (data.export; one audit entry each).
+oaRouter.get('/export/:kind', requirePermission('data.export'), ah(async (req, res) => {
+  if (grant(req.user.role, 'data.export') !== true) throw forbidden(denialReason(req.user, 'data.export'));
+  const { csv } = await exportOnboarding(req.user, req.params.kind, { days: Math.min(Math.max(Number(req.query.days) || 90, 7), 365) });
+  res.set('content-disposition', `attachment; filename="onboarding-${req.params.kind}.csv"`).type('text/csv').send(csv);
 }));
 
 // Every lead the caller may read, with its conversation and timeline — what the console renders.
@@ -95,11 +103,26 @@ oaRouter.post('/tickets/:id/reassign', ah(async (req, res) => res.json(await oa.
 oaRouter.post('/tickets/:id/assign-over-capacity', ah(async (req, res) => res.json(await oa.assignOverCapacity(req.user, req.params.id, req.body?.reason))));
 oaRouter.post('/tickets/:id/macros/:macroId', ah(async (req, res) => res.json(await oa.runMacro(req.user, req.params.macroId, req.params.id, req.body ?? {}))));
 
+// Each macro states what it will do before it runs (OA 6.5, AC-OA-14).
+const MACRO_APPLIES = {
+  log_call: { no_answer: 'attempt_no +1 · status → Failed to Contact · reminder at +no_answer_gap · internal note',
+    answered_strong: 'attempt_no +1 · status → Qualified · stage → walkthrough · internal note',
+    answered_soft: 'attempt_no +1 · status → Pre-qualified · internal note' },
+  book_walkthrough: 'stage → walkthrough · sets walkthrough_at and mode · inserts confirmation text · due date at call time',
+  send_hub: 'stage → walkthrough (self-serve) · sends oa_hub_share_v1 · starts the went-quiet cadence',
+  mark_junk: 'status → Junk Lead · clears due date · internal note',
+};
+export function macroApplies(actions) {
+  const a = typeof actions === 'string' ? JSON.parse(actions) : actions;
+  const v = MACRO_APPLIES[a.op];
+  return (typeof v === 'object' ? v[a.outcome] : v) ?? null;
+}
 oaRouter.get('/macros', ah(async (req, res) => {
-  res.json(await prisma.macro.findMany({
+  const macros = await prisma.macro.findMany({
     where: { module: 'oa', OR: [{ scope: 'team' }, { scope: 'personal', ownerId: req.user.id }] },
     orderBy: { name: 'asc' },
-  }));
+  });
+  res.json(macros.map((m) => ({ ...m, applies: macroApplies(m.actions) })));
 }));
 
 // Capacity: an agent sees only their own budget (no peers, no targets — OA 4.6); supervisors see the team.
