@@ -32,6 +32,24 @@ model User {
   ticketsAssigned Ticket[] @relation("TicketAssignee")
   sellersManaged Seller[]  @relation("SellerAM")
   messages       Message[]
+  elevations     RoleElevation[] @relation("ElevatedUser")
+}
+
+// Temporary elevation (OA 9.3): cover for leave is time-bound. While active, the user acts as
+// `role`; it expires automatically at endsAt and the reversion is audited.
+model RoleElevation {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation("ElevatedUser", fields: [userId], references: [id])
+  role        String
+  reason      String
+  grantedById String?
+  startsAt    DateTime  @default(now())
+  endsAt      DateTime
+  revokedAt   DateTime? // set early by an Admin, or by the expiry sweep at endsAt
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, endsAt])
 }
 
 // ───────────────────────── Platform core ─────────────────────────
