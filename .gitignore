@@ -3,3 +3,4 @@ node_modules/
 prisma/*.db
 prisma/*.db-journal
 tests/.tmp/
+prisma/.jwt-secret
