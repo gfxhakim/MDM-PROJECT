@@ -1,0 +1,35 @@
+# MDM Express — Onboarding + Account Management
+
+One web app with two role-scoped consoles on a shared support-platform core. See `CLAUDE.md` for the
+rules the build follows and `docs/` for the two specifications.
+
+## Run it locally
+
+```bash
+npm install
+cp .env.example .env          # DATABASE_URL (SQLite in dev) and JWT_SECRET
+npx prisma db push
+npm run db:seed               # configuration v1, the team, templates, macros
+npm run db:demo               # optional: demo merchants and sellers (dev databases only)
+npm run dev                   # http://localhost:3000
+```
+
+Sign in at `/` with any seeded account (dev password `mdm-dev-2026`, override with `SEED_PASSWORD`).
+Your role decides which console opens:
+
+| Account | Role | Console |
+|---|---|---|
+| `salma@mdm.local`, `karim@mdm.local`, `noor@mdm.local` | Onboarding Agent | `/oa` |
+| `shiftlead@mdm.local`, `manager@mdm.local` | Shift Lead, Manager | `/oa` (Admin workspace) |
+| `yassine@mdm.local`, `rania@mdm.local`, `omar@mdm.local` | Account Manager | `/am` |
+| `admin@mdm.local` | Administrator / Head of AM | `/oa` and `/am` |
+
+Both consoles are the reference prototypes (`reference/*.html`, normative for layout and wording)
+served unchanged apart from removing their in-browser demo data; `public/assets/*-adapter.js` wires
+every view and action to the API. The `العربية` button switches the UI to Arabic, right-to-left.
+
+## Tests
+
+```bash
+npm test
+```

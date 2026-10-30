@@ -12,8 +12,43 @@ import { activationGate } from '../oa/stateMachine.js';
 import { availability, onboardingAgents } from '../oa/capacity.js';
 import { runOnboardingSweep } from '../oa/rules.js';
 import { onboardingBudget } from '../core/templates.js';
+import { onboardingReadWhere } from '../auth/scope.js';
+import { redact } from '../auth/permissions.js';
+import { pickAccountManager } from '../am/handover.js';
 
 export const oaRouter = Router();
+
+// Every lead the caller may read, with its conversation and timeline — what the console renders.
+oaRouter.get('/leads', ah(async (req, res) => {
+  const tickets = await prisma.ticket.findMany({
+    where: onboardingReadWhere(req.user), include: { contact: true }, orderBy: { createdAt: 'desc' }, take: 1000,
+  });
+  const contactIds = [...new Set(tickets.map((t) => t.contactId))];
+  const convs = await prisma.conversation.findMany({ where: { contactId: { in: contactIds } } });
+  const messages = await prisma.message.findMany({ where: { conversationId: { in: convs.map((c) => c.id) } }, orderBy: { createdAt: 'asc' } });
+  const events = await prisma.eventLog.findMany({
+    where: { OR: [{ entityType: 'ticket', entityId: { in: tickets.map((t) => t.id) } }, { entityType: 'contact', entityId: { in: contactIds } }] },
+    orderBy: { createdAt: 'desc' },
+  });
+  const byConv = new Map(convs.map((c) => [c.contactId, { ...c, messages: [] }]));
+  const convById = new Map([...byConv.values()].map((c) => [c.id, c]));
+  for (const m of messages) convById.get(m.conversationId)?.messages.push(m);
+  const evBy = new Map();
+  for (const e of events) evBy.set(e.entityId, [...(evBy.get(e.entityId) ?? []), e]);
+  res.json(redact(tickets.map((t) => ({
+    ...t, qualification: JSON.parse(t.qualification), handoffRecord: JSON.parse(t.handoffRecord), tags: JSON.parse(t.tags),
+    conversation: byConv.get(t.contactId) ?? null,
+    events: [...(evBy.get(t.id) ?? []), ...(evBy.get(t.contactId) ?? [])],
+  })), req.user.role));
+}));
+
+// Which account manager activation would hand this lead to (AM 3.2) — shown, never chosen.
+oaRouter.get('/tickets/:id/am-preview', ah(async (req, res) => {
+  const t = await getTicket(req.user, req.params.id);
+  const { values: c } = await getLiveConfig();
+  const pick = await pickAccountManager(t.contact.country, c);
+  res.json(pick.manager ? { managerId: pick.manager.id, name: pick.manager.name, bookSize: pick.bookSize } : { managerId: null, reason: pick.reason });
+}));
 
 // A lead with everything the workspace's left pane needs, including the activation gate.
 oaRouter.get('/tickets/:id', ah(async (req, res) => {

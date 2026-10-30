@@ -240,3 +240,113 @@ export async function capacityView(user, db = prisma) {
 }
 
 export { computeHealth, capacityFor };
+
+// ─────────────────────────── calls, snooze, transfer ───────────────────────────
+
+const CALL_OUTCOMES = ['done', 'partial', 'no_answer', 'escalate'];
+
+/**
+ * Log a call on a seller (AM 5.3). The call line goes into the one conversation; an answered call
+ * counts as contact. Against a task: done closes it, partial / no answer move it to tomorrow,
+ * escalate escalates it (reason = the note). Never sends anything to the seller.
+ */
+export async function logCall(user, sellerId, { outcome, taskId, note, minutes }, { now = new Date() } = {}, db = prisma) {
+  if (!CALL_OUTCOMES.includes(outcome)) throw badRequest(`outcome must be one of ${CALL_OUTCOMES.join(', ')}.`);
+  if (outcome === 'escalate' && !filled(note)) throw badRequest('Say why this is beyond the account manager — the next owner reads only this.');
+  const seller = await findSellerInScope(user, sellerId, db);
+  const can = sellerCan(user, seller, 'seller.update');
+  if (!can.allowed) throw forbidden(can.reason);
+  const conv = await db.conversation.findUnique({ where: { contactId: seller.contactId } });
+  const task = taskId ? (await taskInScope(user, taskId, db)).t : null;
+  if (task && task.sellerId !== seller.id) throw badRequest('That task belongs to another seller.');
+  if (task && task.status !== 'open') throw new HttpError(409, 'task_closed', 'This task is already closed.');
+  const answered = outcome !== 'no_answer';
+  const mins = Number.isFinite(Number(minutes)) && Number(minutes) > 0 ? Math.round(Number(minutes)) : 20;
+  await inTx(db, async (tx) => {
+    if (conv) {
+      await tx.message.create({ data: { conversationId: conv.id, direction: 'out', kind: 'call_event', authorUserId: user.id, createdAt: now,
+        body: answered ? `Outbound call · ${mins}:00 · answered` : 'Outbound call · 0:00 · no answer' } });
+      if (filled(note)) await tx.message.create({ data: { conversationId: conv.id, direction: 'internal', kind: 'note', body: note.trim(), authorUserId: user.id, createdAt: now } });
+    }
+    if (answered) await tx.seller.update({ where: { id: seller.id }, data: { lastContactAt: now } });
+    await logEvent({ actorId: user.id, entityType: 'seller', entityId: seller.id, action: 'seller.call_logged', after: { outcome, taskId: task?.id ?? null }, reason: note?.trim() || null }, tx);
+  });
+  if (task && outcome === 'done') await closeTask(user, task.id, note?.trim() || 'Resolved on the call', { now }, db);
+  else if (task && (outcome === 'partial' || outcome === 'no_answer')) await snoozeTask(user, task.id, 1, { now, reason: outcome === 'no_answer' ? 'No answer — retry tomorrow.' : 'Follow-up needed.' }, db);
+  else if (task && outcome === 'escalate') await escalateTask(user, task.id, note, db);
+  return { logged: true };
+}
+
+/** Move a task's due date forward by whole days (the AM updates their own task; audited). */
+export async function snoozeTask(user, taskId, days = 1, { now = new Date(), reason = null } = {}, db = prisma) {
+  const n = Number(days);
+  if (!Number.isInteger(n) || n < 1 || n > 30) throw badRequest('days must be a whole number from 1 to 30.');
+  const { t, seller } = await taskInScope(user, taskId, db);
+  const can = sellerCan(user, seller, 'am_task.close');
+  if (!can.allowed) throw forbidden(can.reason);
+  if (t.status !== 'open') throw new HttpError(409, 'task_closed', 'This task is already closed.');
+  const base = t.dueAt && t.dueAt > now ? t.dueAt : now;
+  const dueAt = new Date(base.getTime() + n * 86_400_000);
+  const updated = await db.ticket.update({ where: { id: t.id }, data: { dueAt } });
+  await logEvent({ actorId: user.id, entityType: 'ticket', entityId: t.id, action: 'am_task.rescheduled', before: { dueAt: t.dueAt }, after: { dueAt }, reason }, db);
+  return updated;
+}
+
+/** An AM asks for a seller to move (AM 3.4): the Admin decides; nothing is reassigned here. */
+export async function requestTransfer(user, sellerId, reason, db = prisma) {
+  if (!filled(reason)) throw badRequest('A reason is required.');
+  const seller = await findSellerInScope(user, sellerId, db, { include: { contact: true } });
+  await logEvent({ actorId: user.id, entityType: 'seller', entityId: seller.id, action: 'seller.transfer_requested', reason }, db);
+  await notifyAdmins(`${user.name} asks to transfer ${seller.contact.name}`, reason, `am-transfer:${seller.id}:${new Date().toISOString().slice(0, 10)}`, db);
+  return { requested: true };
+}
+
+async function notifyAdmins(title, body, dedupeKey, db) {
+  const admins = await db.user.findMany({ where: { role: 'ADMIN', active: true }, select: { id: true } });
+  for (const a of admins) await notify({ userId: a.id, kind: 'am.transfer_request', title, body, dedupeKey }, db);
+}
+
+// ─────────────────────────── console bundle ───────────────────────────
+
+/**
+ * Everything the AM console renders for the caller's scope in one read: sellers with explained
+ * health, tasks, playbook ticks, the conversation and the seller's timeline. Scoped exactly like
+ * listBook — an AM receives their own book and nothing else.
+ */
+export async function consoleBundle(user, { now = new Date() } = {}, db = prisma) {
+  const scope = sellerWhere(user);
+  if (!scope) throw forbidden(denialReason(user, 'seller.view'));
+  const { values: c } = await getLiveConfig(db);
+  const sellers = await db.seller.findMany({ where: { AND: [scope, { joinStatus: 'accepted' }] }, include: { contact: true }, orderBy: { healthScore: 'asc' } });
+  const ids = sellers.map((s) => s.id);
+  const contactIds = sellers.map((s) => s.contactId);
+  const [tasks, ticks, convs, events, tickets] = await Promise.all([
+    db.ticket.findMany({ where: { type: 'am_task', sellerId: { in: ids } }, orderBy: { createdAt: 'desc' } }),
+    db.playbookProgress.findMany({ where: { sellerId: { in: ids } } }),
+    db.conversation.findMany({ where: { contactId: { in: contactIds } }, include: { messages: { orderBy: { createdAt: 'asc' }, take: 200 } } }),
+    db.eventLog.findMany({ where: { entityType: 'seller', entityId: { in: ids } }, orderBy: { createdAt: 'desc' }, take: 2000 }),
+    db.ticket.groupBy({ by: ['contactId'], where: { contactId: { in: contactIds }, type: { notIn: ['am_task', 'onboarding_task'] }, closedAt: null }, _count: true }),
+  ]);
+  const by = (rows, key) => rows.reduce((m, r) => m.set(r[key], [...(m.get(r[key]) ?? []), r]), new Map());
+  const tasksBy = by(tasks, 'sellerId'); const ticksBy = by(ticks, 'sellerId'); const evBy = by(events, 'entityId');
+  const convBy = new Map(convs.map((x) => [x.contactId, x]));
+  const openTickets = new Map(tickets.map((x) => [x.contactId, x._count]));
+  return {
+    sellers: sellers.map((s) => {
+      const health = json(s.healthComponents, {});
+      const conv = convBy.get(s.contactId);
+      return {
+        ...sellerView(s),
+        lastLoginAt: s.lastLoginAt, weeklyReturnRates: json(s.weeklyReturnRates, []), openTickets: openTickets.get(s.contactId) ?? 0,
+        health: { score: s.healthScore, band: s.healthBand, stale: s.healthStale, fallback: health.fallback ?? !c['am.engagementLive'], components: health.components ?? [] },
+        tasks: (tasksBy.get(s.id) ?? []).map((t) => taskView(user, t, s, c)),
+        playbook: STEPS.map((step) => {
+          const tick = (ticksBy.get(s.id) ?? []).find((x) => x.stepDay === step.day);
+          return { day: step.day, title: step.title, gate: step.gate, gateOpen: gateOpen(step, s), tickedAt: tick?.tickedAt ?? null };
+        }),
+        conversation: conv ? { id: conv.id, channel: conv.channel, lastInboundAt: conv.lastInboundAt, takenOverById: conv.takenOverById, messages: conv.messages } : null,
+        events: evBy.get(s.id) ?? [],
+      };
+    }),
+  };
+}

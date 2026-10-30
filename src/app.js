@@ -8,6 +8,7 @@ import { oaRouter } from './routes/oa.js';
 import { registerOnboarding } from './oa/index.js';
 import { amRouter } from './routes/am.js';
 import { registerAccountManagement } from './am/index.js';
+import { webRouter } from './web/routes.js';
 
 export function createApp() {
   registerOnboarding();
@@ -23,6 +24,8 @@ export function createApp() {
   app.use('/api/oa', authenticate, oaRouter);
   app.use('/api/am', authenticate, amRouter);
   app.use('/api', authenticate, coreRouter);
+
+  app.use(webRouter);
 
   app.use('/api', (_req, res) => res.status(404).json({ error: { code: 'not_found', message: 'No such endpoint.' } }));
 

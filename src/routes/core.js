@@ -90,6 +90,13 @@ coreRouter.get('/tickets/:id', ah(async (req, res) => {
   res.json(await getTicket(req.user, req.params.id));
 }));
 
+// ───────── people ─────────
+// Names and markets only — what a console needs to label owners and pick a reassignment target.
+coreRouter.get('/users', ah(async (req, res) => {
+  const where = { active: true, ...(req.query.role ? { role: String(req.query.role) } : {}) };
+  res.json(await prisma.user.findMany({ where, select: { id: true, name: true, role: true, markets: true, onCall: true, businessNumber: true }, orderBy: { name: 'asc' } }));
+}));
+
 // ───────── notifications ─────────
 coreRouter.get('/notifications', ah(async (req, res) => {
   res.json(await listNotifications(req.user.id, { unreadOnly: req.query.unread === 'true' }));

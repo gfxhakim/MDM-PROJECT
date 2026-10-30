@@ -156,7 +156,9 @@ export async function runAmSweep({ db = prisma, config, now = new Date(), recomp
     // r10 — onboarding playbook clock
     if (on('r10') && ['New', 'Onboarding', 'Activated'].includes(stage) && s.activatedAt) {
       const age = Math.floor((now - s.activatedAt) / DAY);
-      for (const step of STEPS.filter((x) => x.taskType && x.day <= age)) {
+      // Only inside the thirty-day window: an imported account months old has no playbook to catch up on.
+      const window = Math.max(...STEPS.map((x) => x.day)) + 2;
+      for (const step of STEPS.filter((x) => x.taskType && x.day <= age && age <= window)) {
         const late = age - step.day >= 2;
         await open(`r10:d${step.day}`, { taskType: step.taskType, priority: late ? 'high' : 'normal', dueIn: 0,
           title: `Day ${step.day} — ${step.title}`, why: `Thirty-day playbook: day ${step.day} step is due (account age ${age} days). Gate: ${step.gate}.` });

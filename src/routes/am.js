@@ -12,6 +12,10 @@ import { logEvent } from '../services/audit.js';
 
 export const amRouter = Router();
 
+amRouter.get('/console', ah(async (req, res) => res.json(await am.consoleBundle(req.user))));
+amRouter.post('/sellers/:id/calls', ah(async (req, res) => res.status(201).json(await am.logCall(req.user, req.params.id, req.body ?? {}))));
+amRouter.post('/sellers/:id/request-transfer', ah(async (req, res) => res.json(await am.requestTransfer(req.user, req.params.id, req.body?.reason))));
+amRouter.post('/tasks/:id/snooze', ah(async (req, res) => res.json(await am.snoozeTask(req.user, req.params.id, req.body?.days ?? 1, { reason: req.body?.reason ?? null }))));
 amRouter.get('/book', ah(async (req, res) => res.json(await am.listBook(req.user, req.query))));
 amRouter.get('/sellers/:id', ah(async (req, res) => res.json(await am.getSeller(req.user, req.params.id))));
 amRouter.get('/sellers/:id/health-history', ah(async (req, res) => {
