@@ -235,6 +235,7 @@
         <button class="${adm ? 'on' : ''}" onclick="setRole('admin')">Admin</button></span>` : ''}
       <span class="me" style="${adm ? 'background:#4F46E5' : ''}">
         <span class="av" style="${adm ? 'color:#4F46E5' : ''}">${initials(X.me.name)}</span> <span data-i18n="off">${esc(X.me.name)}</span></span>
+      ${X.me.role === 'ADMIN' && adm ? '<a class="btn btn-ghost btn-sm" href="/integrations">Integrations</a>' : ''}
       <button class="btn btn-ghost btn-sm" onclick="API.logout()">Sign out</button>`;
   };
 

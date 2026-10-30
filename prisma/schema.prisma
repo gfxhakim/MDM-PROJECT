@@ -25,6 +25,7 @@ model User {
   shiftMinutes   Int       @default(480)
   active         Boolean   @default(true)
   onCall         Boolean   @default(false) // Yeastar presence; manual toggle until PBX wired
+  extension      String?   @unique // Yeastar extension, maps PBX call events to the agent
   lastAssignedAt DateTime? // AM assignment tie-break
   createdAt      DateTime  @default(now())
 
@@ -109,6 +110,8 @@ model Message {
   authorUserId   String?
   author         User?    @relation(fields: [authorUserId], references: [id])
   legacy         Boolean  @default(false)
+  externalId     String?  @unique // provider message id (WhatsApp wamid, Yeastar call id) — dedupes webhooks
+  deliveryStatus String?  // queued | sent | delivered | read | failed | not_sent (no transport configured)
   createdAt      DateTime @default(now())
 
   @@index([conversationId, createdAt])
@@ -200,6 +203,7 @@ model Seller {
   lastProductAddedAt  DateTime?
 
   lastContactAt  DateTime?
+  lastSyncedAt   DateTime? // last mirror update from the MDM platform connector or an import
   lastReviewAt   DateTime?
   churnedAt      DateTime? // set by hand until D-04 structured outcome exists
   welcomeCallAt  DateTime?
@@ -326,4 +330,15 @@ model Notification {
 
   @@unique([userId, dedupeKey])
   @@index([userId, readAt])
+}
+
+// One run of an integration (MDM sync, Zoho import, …): what it did, with per-row results.
+model IntegrationRun {
+  id         String    @id @default(cuid())
+  kind       String    // mdm_sync | zoho_import
+  status     String    // dry_run | completed | failed
+  actorId    String?
+  summary    String    @default("{}") // JSON counts + per-row results
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
 }

@@ -9,16 +9,24 @@ import { registerOnboarding } from './oa/index.js';
 import { amRouter } from './routes/am.js';
 import { registerAccountManagement } from './am/index.js';
 import { webRouter } from './web/routes.js';
+import { integrationHooks, integrationsRouter } from './routes/integrations.js';
+import { registerWhatsapp } from './integrations/whatsapp.js';
 
 export function createApp() {
   registerOnboarding();
   registerAccountManagement();
+  registerWhatsapp();
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '1mb' }));
+  // Webhook signatures are computed over the exact bytes received, so keep them for those routes.
+  const keepRaw = (req, _res, buf) => { if (req.originalUrl.startsWith('/api/integrations/')) req.rawBody = buf; };
+  app.use('/api/integrations/import', express.json({ limit: '20mb' })); // base64 spreadsheet upload
+  app.use(express.json({ limit: '1mb', verify: keepRaw }));
 
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
   app.use('/api/auth', authRouter);
+  app.use('/api/integrations', integrationHooks);
+  app.use('/api/integrations', authenticate, integrationsRouter);
   app.use('/api/config', authenticate, configRouter);
   app.use('/api/admin', authenticate, adminRouter);
   app.use('/api/oa', authenticate, oaRouter);

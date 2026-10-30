@@ -28,6 +28,24 @@ Both consoles are the reference prototypes (`reference/*.html`, normative for la
 served unchanged apart from removing their in-browser demo data; `public/assets/*-adapter.js` wires
 every view and action to the API. The `العربية` button switches the UI to Arabic, right-to-left.
 
+## Integrations
+
+All optional. Each one is configured by environment variables (see `.env.example`); without them the
+app runs on imported or seeded data and the Admin's `/integrations` page says what is not connected.
+
+| Connector | Endpoint | Auth |
+|---|---|---|
+| MDM platform, pushed events (`merchant.registered`, `order.created`, `seller.metrics`) | `POST /api/integrations/mdm/events` | `X-MDM-Key` = `MDM_WEBHOOK_SECRET` |
+| MDM platform, pull sync (hourly, or "Sync now") | `GET {MDM_API_URL}/sellers?updated_since=…` | `x-api-key` = `MDM_API_KEY` |
+| WhatsApp Cloud API webhook (messages, delivery statuses) | `GET`/`POST /api/integrations/whatsapp/webhook` | verify token + `X-Hub-Signature-256` |
+| Yeastar PBX call events and presence | `POST /api/integrations/yeastar/events` | `X-Yeastar-Secret` |
+| Zoho CRM import (CSV or Excel, leads or sellers) | `/integrations` page → `POST /api/integrations/import` | Admin sign-in |
+
+Connectors only write the seller *mirror* (orders, delivery, wallet, catalogue). Health score and
+lifecycle stage are refused if sent; the nightly recompute derives them. Webhook retries are
+idempotent (provider message ids are stored once). Every import is previewed first and committed as
+one audited run.
+
 ## Tests
 
 ```bash

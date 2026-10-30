@@ -232,6 +232,7 @@
       <span class="me" style="${adm ? 'background:#4F46E5' : ''}">
         <span class="av" style="${adm ? 'color:#4F46E5' : ''}">${initials(X.me.name)}</span> <span data-i18n="off">${esc(X.me.name)}</span></span>
       <a class="btn btn-ghost btn-sm" href="/oa" style="${X.me.role === 'ACCOUNT_MANAGER' ? 'display:none' : ''}">Onboarding</a>
+      ${X.me.role === 'ADMIN' && adm ? '<a class="btn btn-ghost btn-sm" href="/integrations">Integrations</a>' : ''}
       <button class="btn btn-ghost btn-sm" onclick="API.logout()">Sign out</button>`;
   };
 

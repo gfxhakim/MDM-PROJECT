@@ -50,6 +50,8 @@ const OA = {
   'reports.view':                 R('own', 'team', true, true, 'own_contacts', true),
   'data.export':                  R(false, false, 'approval', true, false, false),
   'audit.view':                   R(false, false, true, true, false, true),
+  // Platform: connectors (MDM, WhatsApp, Yeastar) and the Zoho import. Admin only.
+  'integrations.manage':          R(false, false, false, true, false, false),
 };
 
 // ─────────── Account management (AM Appendix A) ───────────

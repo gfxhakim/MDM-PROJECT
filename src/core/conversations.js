@@ -167,7 +167,7 @@ export async function sendTemplate(user, conversationId, templateKey, variables 
   const actorId = automated ? null : user.id;
   const msg = await writeOutbound(db, conv, { kind: 'template', body, templateKey: t.key, billable: true, createdAt: now }, actorId,
     'message.template_sent', { templateKey: t.key, billable: true, automated, ruleId: ruleId ?? null });
-  if (!silent) await emit('message.sent', { conversation: conv, message: msg, actorId, automated });
+  if (!silent) await emit('message.sent', { conversation: conv, message: msg, actorId, automated, template: t, variables });
   return msg;
 }
 

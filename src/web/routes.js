@@ -11,6 +11,7 @@ const html = (res, body) => res.set('cache-control', 'no-store').type('html').se
 export const webRouter = Router();
 webRouter.use('/assets', express.static(join(publicDir, 'assets'), { maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0 }));
 webRouter.get('/', (_req, res) => res.set('cache-control', 'no-store').sendFile(join(publicDir, 'login.html')));
+webRouter.get('/integrations', (_req, res) => res.set('cache-control', 'no-store').sendFile(join(publicDir, 'integrations.html')));
 webRouter.get('/oa', (_req, res) => html(res, consoles().oa));
 webRouter.get('/am', (_req, res) => {
   const am = consoles().am;

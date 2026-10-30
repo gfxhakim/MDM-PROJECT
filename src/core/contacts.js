@@ -51,9 +51,14 @@ export async function listContacts(user, { q, take = 50 } = {}, db = prisma) {
  * the message and opens the 24-hour window. A blocked contact's message is stored but emits
  * nothing, so no ticket is ever created for it (OA 13.3).
  */
-export async function receiveInbound({ phone, body, name, country, sourceUtm, kind = 'text', at = new Date() }, db = prisma) {
+export async function receiveInbound({ phone, body, name, country, sourceUtm, kind = 'text', at = new Date(), externalId = null }, db = prisma) {
   const e164 = normalizePhone(phone);
   if (!body || !String(body).trim()) throw badRequest('Message body is required.');
+  // Providers retry webhooks: a message already stored under its provider id is not stored twice.
+  if (externalId) {
+    const dup = await db.message.findUnique({ where: { externalId }, include: { conversation: { include: { contact: true } } } });
+    if (dup) return { contact: dup.conversation.contact, conversation: dup.conversation, message: dup, created: false, duplicate: true };
+  }
 
   const result = await inTx(db, async (tx) => {
     let contact = await tx.contact.findUnique({ where: { phone: e164 } });
@@ -72,7 +77,7 @@ export async function receiveInbound({ phone, body, name, country, sourceUtm, ki
       update: { lastInboundAt: at },
     });
     const message = await tx.message.create({
-      data: { conversationId: conversation.id, direction: 'in', kind, body: String(body), createdAt: at },
+      data: { conversationId: conversation.id, direction: 'in', kind, body: String(body), createdAt: at, externalId },
     });
     return { contact, conversation, message, created };
   });

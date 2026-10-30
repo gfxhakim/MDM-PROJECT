@@ -3,6 +3,7 @@ import { expireElevations } from './auth/elevation.js';
 import { getLiveConfig } from './config/service.js';
 import { runOnboardingSweep } from './oa/rules.js';
 import { runAmSweep } from './am/rules.js';
+import { mdmConfig, syncSellers } from './integrations/mdm.js';
 
 if (!process.env.JWT_SECRET) {
   console.error('JWT_SECRET is not set. Copy .env.example to .env and set it.');
@@ -44,3 +45,11 @@ function scheduleNightly() {
   }, next - now);
 }
 scheduleNightly();
+
+// MDM platform pull sync, hourly, only when the connector is configured (MDM_SYNC_MINUTES overrides).
+if (mdmConfig().url && mdmConfig().apiKey) {
+  const every = (Number(process.env.MDM_SYNC_MINUTES) || 60) * 60_000;
+  const sync = () => syncSellers().then((s) => console.log(`MDM sync: ${s.updated}/${s.fetched} sellers updated`)).catch((e) => console.error('MDM sync', e.message));
+  setTimeout(sync, 10_000);
+  setInterval(sync, every);
+}
