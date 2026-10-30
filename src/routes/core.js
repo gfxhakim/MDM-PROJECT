@@ -7,6 +7,7 @@ import * as conv from '../core/conversations.js';
 import { getTicket, listTickets } from '../core/tickets.js';
 import { onboardingBudget, renderTemplate } from '../core/templates.js';
 import { amTaskWhere, onboardingReadWhere } from '../auth/scope.js';
+import { listNotifications, markRead } from '../core/notifications.js';
 
 export const coreRouter = Router();
 
@@ -87,6 +88,14 @@ coreRouter.get('/tickets', ah(async (req, res) => {
 }));
 coreRouter.get('/tickets/:id', ah(async (req, res) => {
   res.json(await getTicket(req.user, req.params.id));
+}));
+
+// ───────── notifications ─────────
+coreRouter.get('/notifications', ah(async (req, res) => {
+  res.json(await listNotifications(req.user.id, { unreadOnly: req.query.unread === 'true' }));
+}));
+coreRouter.post('/notifications/read', ah(async (req, res) => {
+  res.json(await markRead(req.user.id, Array.isArray(req.body?.ids) ? req.body.ids : []));
 }));
 
 // ───────── inbound (dev) ─────────

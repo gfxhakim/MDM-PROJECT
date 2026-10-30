@@ -1,5 +1,5 @@
 // Contacts: one record per phone number, scoped reads, inbound capture, block and opt-out.
-import { prisma } from '../db.js';
+import { prisma, inTx } from '../db.js';
 import { logEvent } from '../services/audit.js';
 import { grant } from '../auth/permissions.js';
 import { denialReason, sellerWhere } from '../auth/scope.js';
@@ -55,7 +55,7 @@ export async function receiveInbound({ phone, body, name, country, sourceUtm, ki
   const e164 = normalizePhone(phone);
   if (!body || !String(body).trim()) throw badRequest('Message body is required.');
 
-  const result = await db.$transaction(async (tx) => {
+  const result = await inTx(db, async (tx) => {
     let contact = await tx.contact.findUnique({ where: { phone: e164 } });
     let created = false;
     if (!contact) {
@@ -91,7 +91,7 @@ export async function setBlocked(user, contactId, blocked, reason, db = prisma) 
   if (!reason || !String(reason).trim()) throw badRequest('A written reason is required.');
   const contact = await findContact(user, contactId, db);
   if (contact.blocked === blocked) return contact;
-  return db.$transaction(async (tx) => {
+  return inTx(db, async (tx) => {
     const updated = await tx.contact.update({ where: { id: contact.id }, data: { blocked, blockReason: blocked ? reason : null } });
     await logEvent({
       actorId: user.id, entityType: 'contact', entityId: contact.id, action: blocked ? 'contact.blocked' : 'contact.unblocked',
@@ -105,7 +105,7 @@ export async function setBlocked(user, contactId, blocked, reason, db = prisma) 
 export async function setOptedOut(user, contactId, optedOut, reason, db = prisma) {
   const contact = await findContact(user, contactId, db);
   if (user.role === 'READ_ONLY') throw forbidden(denialReason(user, 'onboarding.note'));
-  return db.$transaction(async (tx) => {
+  return inTx(db, async (tx) => {
     const updated = await tx.contact.update({ where: { id: contact.id }, data: { optedOut } });
     await logEvent({
       actorId: user.id, entityType: 'contact', entityId: contact.id, action: optedOut ? 'contact.opted_out' : 'contact.opt_in',

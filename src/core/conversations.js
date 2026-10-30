@@ -8,7 +8,7 @@
 //       (OA 9.2, AC-OA-22): "monitoring is not replying".
 //   - note: anyone who can read it and holds the note grant. Notes never reach the contact.
 // Closing a ticket never closes the conversation — a conversation has no closed state.
-import { prisma } from '../db.js';
+import { prisma, inTx } from '../db.js';
 import { logEvent } from '../services/audit.js';
 import { getLiveConfig } from '../config/service.js';
 import { grant } from '../auth/permissions.js';
@@ -115,7 +115,7 @@ export async function getConversationForContact(user, contactId, opts, db = pris
 }
 
 async function writeOutbound(db, conv, data, actorId, auditAction, auditAfter) {
-  return db.$transaction(async (tx) => {
+  return inTx(db, async (tx) => {
     const msg = await tx.message.create({ data: { conversationId: conv.id, direction: 'out', ...data, authorUserId: actorId } });
     await tx.conversation.update({ where: { id: conv.id }, data: { lastOutboundAt: msg.createdAt } });
     await logEvent({ actorId, entityType: 'conversation', entityId: conv.id, action: auditAction, after: { messageId: msg.id, ...auditAfter } }, tx);
@@ -132,7 +132,7 @@ export async function sendText(user, conversationId, body, { now = new Date() } 
   if (!sessionWindow(conv, now).open) {
     throw new HttpError(409, 'window_closed', 'The 24-hour window is closed. Only an approved template can be sent (billable).');
   }
-  const msg = await writeOutbound(db, conv, { kind: 'text', body: String(body) }, user.id, 'message.sent', { kind: 'text' });
+  const msg = await writeOutbound(db, conv, { kind: 'text', body: String(body), createdAt: now }, user.id, 'message.sent', { kind: 'text' });
   await emit('message.sent', { conversation: conv, message: msg, actorId: user.id });
   return msg;
 }
@@ -142,7 +142,7 @@ export async function sendText(user, conversationId, body, { now = new Date() } 
  * `user` is null for an automated send by a rule (actor = system). Onboarding sends are checked
  * against the monthly ceiling and the per-contact cap; a rule never fabricates a send it cannot pay for.
  */
-export async function sendTemplate(user, conversationId, templateKey, variables = [], { now = new Date(), automated = false, ruleId } = {}, db = prisma) {
+export async function sendTemplate(user, conversationId, templateKey, variables = [], { now = new Date(), automated = false, ruleId, config, silent = false } = {}, db = prisma) {
   let conv;
   if (automated) {
     conv = await load(conversationId, db);
@@ -155,7 +155,9 @@ export async function sendTemplate(user, conversationId, templateKey, variables 
     const can = conversationCan(user, conv);
     if (!can.template.allowed) throw forbidden(can.template.reason);
   }
-  const { values } = await getLiveConfig(db);
+  // `config` lets a simulated sweep evaluate the budget against the draft; `silent` keeps a
+  // simulation from emitting events that would run outside its rolled-back transaction.
+  const values = config ?? (await getLiveConfig(db)).values;
   const t = await usableTemplate(templateKey, conv.contact, values, db);
   const body = renderTemplate(t.bodyEn, variables);
   if (moduleForContact(conv.contact) === 'oa') {
@@ -163,9 +165,9 @@ export async function sendTemplate(user, conversationId, templateKey, variables 
     if (!budget.allowed) throw new HttpError(409, 'template_budget', budget.reason, budget);
   }
   const actorId = automated ? null : user.id;
-  const msg = await writeOutbound(db, conv, { kind: 'template', body, templateKey: t.key, billable: true }, actorId,
+  const msg = await writeOutbound(db, conv, { kind: 'template', body, templateKey: t.key, billable: true, createdAt: now }, actorId,
     'message.template_sent', { templateKey: t.key, billable: true, automated, ruleId: ruleId ?? null });
-  await emit('message.sent', { conversation: conv, message: msg, actorId, automated });
+  if (!silent) await emit('message.sent', { conversation: conv, message: msg, actorId, automated });
   return msg;
 }
 
@@ -194,7 +196,7 @@ export async function takeOver(user, conversationId, reason, db = prisma) {
   const can = conversationCan(user, conv);
   if (!can.takeOver.allowed) throw forbidden(can.takeOver.reason);
   const previous = ownerOf(conv).userId ?? null;
-  await db.$transaction(async (tx) => {
+  await inTx(db, async (tx) => {
     if (conv.openOnboarding && !conv.takenOverById) {
       await tx.ticket.update({ where: { id: conv.openOnboarding.id }, data: { assigneeId: user.id } });
       await logEvent({
@@ -218,7 +220,7 @@ export async function release(user, conversationId, db = prisma) {
   const conv = await findConversation(user, conversationId, db);
   if (conv.takenOverById !== user.id && user.role !== 'ADMIN') throw forbidden('Only the user who took it over, or an Admin, can release it.');
   if (!conv.takenOverById) throw badRequest('This conversation is not taken over.');
-  await db.$transaction(async (tx) => {
+  await inTx(db, async (tx) => {
     await tx.conversation.update({ where: { id: conv.id }, data: { takenOverById: null, takenOverAt: null } });
     await logEvent({ actorId: user.id, entityType: 'conversation', entityId: conv.id, action: 'conversation.released', before: { ownerId: conv.takenOverById } }, tx);
     await addSystemLine(conv.id, `${user.name} handed the conversation back.`, tx);

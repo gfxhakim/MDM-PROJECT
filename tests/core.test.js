@@ -28,15 +28,18 @@ const nextPhone = () => `+21891000${String(phoneSeq++).padStart(4, '0')}`;
 /** A merchant with a conversation and an open onboarding ticket assigned to `assignee`. */
 async function lead(assigneeKey, { inboundAgoMs = HOUR } = {}) {
   const r = await receiveInbound({ phone: nextPhone(), body: 'Hello', name: 'Merchant', country: 'LY', at: new Date(Date.now() - inboundAgoMs) });
-  const ticket = await prisma.ticket.create({
-    data: { type: 'onboarding_task', contactId: r.contact.id, assigneeId: U[assigneeKey].id, status: 'new', stage: 'first_contact' },
-  });
+  // The onboarding engine's r1 may already have captured it; either way, assign it to `assignee`.
+  const existing = await prisma.ticket.findFirst({ where: { contactId: r.contact.id, type: 'onboarding_task' } });
+  const ticket = existing
+    ? await prisma.ticket.update({ where: { id: existing.id }, data: { assigneeId: U[assigneeKey].id, holdReason: null } })
+    : await prisma.ticket.create({ data: { type: 'onboarding_task', contactId: r.contact.id, assigneeId: U[assigneeKey].id, status: 'new', stage: 'first_contact' } });
   return { ...r, ticket };
 }
 
 /** An activated seller in `amKey`'s book, with its conversation. */
 async function seller(amKey) {
   const r = await receiveInbound({ phone: nextPhone(), body: 'Hi', name: 'Seller', country: 'LY' });
+  await prisma.ticket.updateMany({ where: { contactId: r.contact.id, type: 'onboarding_task' }, data: { status: 'activated', closedAt: new Date() } });
   await prisma.contact.update({ where: { id: r.contact.id }, data: { contactType: 'seller', ownerAgentId: U[amKey].id } });
   const s = await prisma.seller.create({ data: { mdmRef: `MDM-S-${phoneSeq}`, contactId: r.contact.id, market: 'LY', assignedAccountManagerId: U[amKey].id, joinStatus: 'accepted' } });
   return { ...r, seller: s };
@@ -104,7 +107,9 @@ test('contact list is scoped: team for onboarding roles, own book for an AM', as
   const s = await seller('rania');
   const agentIds = (await call('GET', '/api/contacts', { token: await tok('salma') })).body.map((c) => c.id);
   assert.ok(agentIds.includes(l.contact.id));
-  assert.ok(!agentIds.includes(s.contact.id));
+  // a seller is visible to onboarding roles only through its onboarding history
+  const plain = await prisma.contact.create({ data: { name: 'Direct seller', phone: nextPhone(), country: 'LY', contactType: 'seller', ownerAgentId: U.rania.id } });
+  assert.ok(!(await call('GET', '/api/contacts', { token: await tok('salma') })).body.some((c) => c.id === plain.id));
   const yIds = (await call('GET', '/api/contacts', { token: await tok('yassine') })).body.map((c) => c.id);
   assert.ok(!yIds.includes(s.contact.id) && !yIds.includes(l.contact.id));
   assert.equal((await call('GET', `/api/contacts/${s.contact.id}`, { token: await tok('yassine') })).status, 404);

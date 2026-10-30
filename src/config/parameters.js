@@ -15,6 +15,8 @@ const int = (min, max) => ({ type: 'int', min, max });
 const num = (min, max) => ({ type: 'number', min, max });
 const bool = () => ({ type: 'bool' });
 const oneOf = (...values) => ({ type: 'enum', values });
+const time = () => ({ type: 'time' }); // "HH:MM", 24h
+const weekdays = () => ({ type: 'weekdays' }); // "sun,mon,tue,wed,thu"
 
 function p(key, def, unit, owner, group, label, help, rule, extra = {}) {
   return { key, default: def, unit, owner, group, label, help, ...rule, ...extra };
@@ -50,6 +52,16 @@ const OA = [
     'A lead with no free agent waits here, never with nobody.', int(1, 240)),
   p('oa.holding_escalation', 60, 'min', 'manage_automation', 'oa.capacity', 'Holding-queue escalation',
     'Notify the shift lead when a lead has waited beyond this.', int(1, 1440)),
+
+  // Business hours — OA 12.1 "Team & skills" (not an Appendix D row, but every business-hours
+  // clock depends on them: first_contact_sla, the holding queue, the first-contact metric).
+  // Defaults follow the 08:30–16:30 shift; the working week is an assumption to confirm.
+  p('oa.business_timezone', 'Africa/Tripoli', null, 'Manager', 'oa.capacity', 'Team time zone',
+    'Business hours and "today" are evaluated in this zone.', oneOf('Africa/Tripoli', 'Asia/Baghdad', 'Asia/Beirut')),
+  p('oa.business_open', '08:30', null, 'Manager', 'oa.capacity', 'Shift opens', 'Start of business hours.', time()),
+  p('oa.business_close', '16:30', null, 'Manager', 'oa.capacity', 'Shift closes', 'End of business hours.', time()),
+  p('oa.business_days', 'sun,mon,tue,wed,thu', null, 'Manager', 'oa.capacity', 'Working days',
+    'Days the onboarding team works.', weekdays(), { openDecision: 'working week' }),
 
   // Time model — all estimate until OA-3 calibration
   ...[

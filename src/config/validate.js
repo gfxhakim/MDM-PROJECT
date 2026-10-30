@@ -3,6 +3,8 @@
 //   validateConfig — a whole snapshot, including the cross-field gates. Used by simulate and publish.
 import { PARAMETER_MAP, AM_HEALTH_WEIGHT_KEYS } from './parameters.js';
 
+export const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
 export function validateValue(key, value) {
   const def = PARAMETER_MAP[key];
   if (!def) return `Unknown configuration parameter "${key}".`;
@@ -13,6 +15,14 @@ export function validateValue(key, value) {
     case 'enum':
       if (!def.values.includes(value)) return `${key} must be one of: ${def.values.join(', ')}.`;
       return null;
+    case 'time':
+      if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return `${key} must be a time like 08:30.`;
+      return null;
+    case 'weekdays': {
+      const days = typeof value === 'string' ? value.split(',') : [];
+      const ok = days.length > 0 && days.every((d) => WEEKDAYS.includes(d)) && new Set(days).size === days.length;
+      return ok ? null : `${key} must be a comma-separated list of: ${WEEKDAYS.join(', ')}.`;
+    }
     case 'int':
     case 'number': {
       if (typeof value !== 'number' || !Number.isFinite(value)) return `${key} must be a number.`;
@@ -63,6 +73,10 @@ export function validateConfig(values) {
   if (values['oa.reserved_minutes'] >= values['oa.shift_minutes']) {
     errors.push({ keys: ['oa.reserved_minutes', 'oa.shift_minutes'], code: 'capacity',
       message: `Reserved blocks (${values['oa.reserved_minutes']} min) leave no assignable time in a ${values['oa.shift_minutes']}-minute shift.` });
+  }
+  if (values['oa.business_open'] >= values['oa.business_close']) {
+    errors.push({ keys: ['oa.business_open', 'oa.business_close'], code: 'business_hours',
+      message: `The shift must open (${values['oa.business_open']}) before it closes (${values['oa.business_close']}).` });
   }
   return errors;
 }

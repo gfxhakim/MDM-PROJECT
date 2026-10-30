@@ -31,6 +31,7 @@ model User {
   contactsOwned  Contact[] @relation("ContactOwner")
   ticketsAssigned Ticket[] @relation("TicketAssignee")
   sellersManaged Seller[]  @relation("SellerAM")
+  notifications  Notification[]
   messages       Message[]
   elevations     RoleElevation[] @relation("ElevatedUser")
 }
@@ -139,6 +140,9 @@ model Ticket {
   nextFollowupAt DateTime?
   cadenceReset   Boolean  @default(false)
   holdReason     String?  // never null while unassigned
+  heldAt         DateTime? // when it entered the holding queue (r8 escalation clock)
+  stalledReason  String?  // written reason required once open past stalled_day (OA 5.5)
+  tags           String   @default("[]") // JSON array, e.g. oa_cold_no_answer
   walkthroughAt  DateTime?
   walkthroughMode String? // phone | meet | whatsapp_video
   qualification  String   @default("{}") // JSON: 5 booleans (OA 8.1)
@@ -301,4 +305,22 @@ model EventLog {
 
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// In-app notifications (rules' notify(...) action). dedupeKey makes every rule notification
+// idempotent: a sweep run twice notifies once.
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  kind      String    // e.g. oa.r3.attempt_due
+  title     String
+  body      String?
+  ticketId  String?
+  dedupeKey String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt])
 }

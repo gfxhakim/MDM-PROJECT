@@ -56,4 +56,21 @@ for (const [key, module, bodyEn, enabled = true] of TEMPLATES) {
 }
 console.log(`Templates: ${tplCreated} created, ${TEMPLATES.length - tplCreated} already present.`);
 
+// The six onboarding team macros (OA 6.5). Internal: they apply changes and insert text; never send.
+const MACROS = [
+  ['Log call — no answer', { op: 'log_call', outcome: 'no_answer' }, 'Called, no answer.'],
+  ['Log call — answered, strong lead', { op: 'log_call', outcome: 'answered_strong' }, 'Answered — strong lead. Walkthrough next.'],
+  ['Log call — answered, soft lead', { op: 'log_call', outcome: 'answered_soft' }, 'Answered — interested, not committed yet.'],
+  ['Book the walkthrough', { op: 'book_walkthrough' }, 'Your walkthrough is booked. Here is the Resource Hub so you can arrive with questions.'],
+  ['Send Hub instead of a call', { op: 'send_hub' }, ''],
+  ['Mark junk — not a real seller', { op: 'mark_junk' }, 'Not a real seller.'],
+];
+let macroCreated = 0;
+for (const [name, actions, insertText] of MACROS) {
+  if (await prisma.macro.findFirst({ where: { module: 'oa', scope: 'team', name } })) continue;
+  await prisma.macro.create({ data: { module: 'oa', scope: 'team', name, actions: JSON.stringify(actions), insertText } });
+  macroCreated++;
+}
+console.log(`Macros: ${macroCreated} created, ${MACROS.length - macroCreated} already present.`);
+
 await prisma.$disconnect();
