@@ -9,6 +9,8 @@ import * as am from '../am/service.js';
 import { coverage } from '../am/capacity.js';
 import { runAmSweep } from '../am/rules.js';
 import { logEvent } from '../services/audit.js';
+import { amAnalytics } from '../am/analytics.js';
+import { grant } from '../auth/permissions.js';
 
 export const amRouter = Router();
 
@@ -32,11 +34,18 @@ amRouter.get('/capacity', ah(async (req, res) => res.json(await am.capacityView(
 amRouter.get('/coverage', requirePermission('am.performance_team'), ah(async (_req, res) => {
   res.json(await coverage((await getLiveConfig()).values));
 }));
+// Head of AM sees every manager; an AM sees their own performance row only (AM Appendix A).
+amRouter.get('/analytics', requirePermission('am.performance_own'), ah(async (req, res) => {
+  const a = await amAnalytics();
+  if (!grant(req.user.role, 'am.performance_team')) a.perf = { [req.user.id]: a.perf[req.user.id] ?? null };
+  res.json(a);
+}));
 amRouter.post('/sweep', requirePermission('am.rule_sweep'), ah(async (req, res) => {
   const r = await runAmSweep();
   await logEvent({ actorId: req.user.id, entityType: 'system', entityId: 'am.sweep', action: 'am.sweep_manual', after: { tasksOpened: r.tasksOpened, tasksUpgraded: r.tasksUpgraded } });
   res.json(r);
 }));
+amRouter.post('/bulk-tasks', ah(async (req, res) => res.json(await am.bulkCreateTasks(req.user, req.body ?? {}))));
 amRouter.post('/reassign', ah(async (req, res) => {
   res.json(await am.reassignSellers(req.user, req.body?.sellerIds, req.body?.toManagerId, req.body?.reason));
 }));

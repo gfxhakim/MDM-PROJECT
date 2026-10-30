@@ -350,3 +350,24 @@ export async function consoleBundle(user, { now = new Date() } = {}, db = prisma
     }),
   };
 }
+
+/** Open the same task on many sellers (Head of AM). Per-seller results; one audit entry for the run. */
+export async function bulkCreateTasks(user, { sellerIds, taskType, title, why, priority = 'normal', dueAt }, db = prisma) {
+  if (!grant(user.role, 'am_task.bulk_create')) throw forbidden(denialReason(user, 'am_task.bulk_create'));
+  if (!Array.isArray(sellerIds) || !sellerIds.length) throw badRequest('sellerIds must be a non-empty list.');
+  if (sellerIds.length > 200) throw badRequest('At most 200 sellers per bulk run.');
+  if (!filled(why)) throw badRequest('why is required: the numbers or reason that produced this task.');
+  const results = [];
+  for (const id of sellerIds) {
+    try {
+      const s = await findSellerInScope(user, id, db, { include: { contact: true } });
+      const t = await createTask(user, id, { taskType, title: `${title?.trim() || taskType} — ${s.contact.name}`, why, priority, dueAt }, db);
+      results.push({ sellerId: id, ok: true, taskId: t.id });
+    } catch (err) {
+      results.push({ sellerId: id, ok: false, error: err.message });
+    }
+  }
+  await logEvent({ actorId: user.id, entityType: 'bulk', entityId: `am:tasks:${Date.now()}`, action: 'bulk.am_task_create',
+    after: { taskType, title, results }, reason: why }, db);
+  return { results, succeeded: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length };
+}

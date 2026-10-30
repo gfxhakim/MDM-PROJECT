@@ -8,6 +8,8 @@ import { getTicket, listTickets } from '../core/tickets.js';
 import { onboardingBudget, renderTemplate } from '../core/templates.js';
 import { amTaskWhere, onboardingReadWhere } from '../auth/scope.js';
 import { listNotifications, markRead } from '../core/notifications.js';
+import { grant } from '../auth/permissions.js';
+import { logEvent } from '../services/audit.js';
 
 export const coreRouter = Router();
 
@@ -73,6 +75,29 @@ coreRouter.get('/conversations/:id/template-budget', ah(async (req, res) => {
 coreRouter.get('/templates', ah(async (req, res) => {
   const where = req.query.module ? { module: req.query.module } : {};
   res.json(await prisma.template.findMany({ where, orderBy: { key: 'asc' } }));
+}));
+
+// Sends per template over a window — the spend view (OA 13.2). Counts only, no message content.
+coreRouter.get('/templates/usage', ah(async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days) || 90, 1), 365);
+  const rows = await prisma.message.groupBy({
+    by: ['templateKey'], where: { kind: 'template', direction: 'out', createdAt: { gte: new Date(Date.now() - days * 86_400_000) } }, _count: true,
+  });
+  res.json({ days, sends: Object.fromEntries(rows.filter((r) => r.templateKey).map((r) => [r.templateKey, r._count])) });
+}));
+
+// Enable / disable an approved template (agents cannot — OA 13.2). Content is changed only through
+// Meta approval, so there is no edit route. Audited with the reason.
+coreRouter.post('/templates/:key/:state(enable|disable)', ah(async (req, res) => {
+  if (!grant(req.user.role, 'template.author')) throw forbidden('Templates are enabled or disabled by a Manager or an Admin.');
+  const t = await prisma.template.findUnique({ where: { key: req.params.key } });
+  if (!t) return res.status(404).json({ error: { code: 'not_found', message: 'Template not found.' } });
+  const enabled = req.params.state === 'enable';
+  if (enabled && t.status !== 'approved') throw forbidden('Only a Meta-approved template can be enabled.');
+  const updated = await prisma.template.update({ where: { key: t.key }, data: { enabled } });
+  await logEvent({ actorId: req.user.id, entityType: 'template', entityId: t.key, action: enabled ? 'template.enabled' : 'template.disabled',
+    before: { enabled: t.enabled }, after: { enabled }, reason: req.body?.reason ?? null });
+  res.json(updated);
 }));
 
 // Resolved preview — shown before a billable send (OA 6.6).

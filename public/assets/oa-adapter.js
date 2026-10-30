@@ -169,15 +169,31 @@
     }));
     AMS = users.filter((u) => u.role === 'ACCOUNT_MANAGER').map((u) => u.name); // eslint-disable-line no-global-assign
     S.leads = leads.map(leadOf);
+    await loadAnalytics();
     if (isAdminView) await loadAdmin();
     render();
   }
 
+  // Operations / Performance numbers: the server's aggregates replace the prototype's samples.
+  async function loadAnalytics() {
+    const a = await API.get('/api/oa/analytics').catch(() => null);
+    if (!a) return;
+    X.analytics = a;
+    Object.assign(A, a);
+    for (const r of RULES) r.runs = a.ruleRunsWindow?.[r.id] ?? 0;
+  }
+
   async function loadAdmin() {
-    const [audit, versions] = await Promise.all([
+    const [audit, versions, templates, usage, elevations] = await Promise.all([
       API.get('/api/admin/audit?limit=100').catch(() => []),
       API.get('/api/config/versions').catch(() => []),
+      API.get('/api/templates?module=oa').catch(() => []),
+      API.get('/api/templates/usage?days=90').catch(() => ({ sends: {} })),
+      API.get('/api/admin/elevations').catch(() => null),
     ]);
+    TPL_STATE = Object.fromEntries(templates.map((t) => [t.key, { on: t.enabled, used: usage.sends[t.key] ?? 0, status: t.status }])); // eslint-disable-line no-global-assign
+    for (const t of TEMPLATES) if (!TPL_STATE[t.key]) TPL_STATE[t.key] = { on: false, used: 0 };
+    X.elevations = elevations;
     AUDIT.length = 0;
     for (const e of audit) {
       AUDIT.push({
@@ -374,32 +390,39 @@
     reasonModal('Reassign', `${esc(l.name)}: ${esc(nameOf(l.ownerId))} → ${esc(nameOf(to))}. The merchant sees nothing; the conversation is unbroken.`, 'Reassign',
       (reason) => act(() => API.post(`/api/oa/tickets/${l.id}/reassign`, { toUserId: to, reason }), 'Reassigned'));
   };
+  const bulkToast = (r, verb) => {
+    const bad = r.results.filter((x) => !x.ok);
+    toast(`${r.succeeded} ${verb}${bad.length ? ` · ${bad.length} refused: ${bad[0].error}` : ''}`, bad.length ? 'warn' : 'ok');
+  };
+  // Bulk runs go to one server call: per-ticket permission checks, per-ticket results, one audit entry.
   window.doBulkAssign = function () {
     const to = M.choice; const ids = S.sel.slice(); closeModal();
     reasonModal(`Reassign ${ids.length} tickets`, 'Per-ticket permissions are checked individually. Anything that fails is reported, not silently skipped.', 'Reassign', (reason) => act(async () => {
-      const results = [];
-      for (const id of ids) {
-        const target = to === 'balance' ? TEAM.map((x) => ({ x, c: S.leads.filter((y) => y.ownerId === x.id && isOpen(y)).length })).sort((a, b) => a.c - b.c)[0].x.id : to;
-        try { await API.post(`/api/oa/tickets/${id}/reassign`, { toUserId: target, reason }); results.push({ id, ok: true }); } catch (e) { results.push({ id, ok: false, error: errText(e) }); }
+      if (to === 'balance') {
+        // spread across the team: each ticket to whoever holds the fewest open leads at that moment
+        const load = new Map(TEAM.map((x) => [x.id, S.leads.filter((y) => y.ownerId === x.id && isOpen(y)).length]));
+        const groups = new Map();
+        for (const id of ids) {
+          const target = [...load.entries()].sort((a, b) => a[1] - b[1])[0][0];
+          load.set(target, load.get(target) + 1);
+          groups.set(target, [...(groups.get(target) ?? []), id]);
+        }
+        const all = { results: [], succeeded: 0 };
+        for (const [toUserId, ticketIds] of groups) {
+          const r = await API.post('/api/oa/bulk', { op: 'reassign', ticketIds, toUserId, reason });
+          all.results.push(...r.results); all.succeeded += r.succeeded;
+        }
+        S.sel = []; return bulkToast(all, 'reassigned');
       }
-      S.sel = [];
-      const bad = results.filter((r) => !r.ok);
-      toast(`${results.length - bad.length} reassigned${bad.length ? ` · ${bad.length} refused: ${bad[0].error}` : ''}`, bad.length ? 'warn' : 'ok');
+      const r = await API.post('/api/oa/bulk', { op: 'reassign', ticketIds: ids, toUserId: to, reason });
+      S.sel = []; bulkToast(r, 'reassigned');
     }));
   };
   window.doBulkStatus = function () {
     const s = M.choice; const note = ((document.getElementById('m-note') || {}).value || '').trim(); const ids = S.sel.slice();
     if (!note) return toast('A written reason is required.', 'warn');
     closeModal();
-    act(async () => {
-      const results = [];
-      for (const id of ids) {
-        try { await API.post(`/api/oa/tickets/${id}/transition`, { to: STATUS_BACK[s], reason: note }); results.push({ ok: true }); } catch (e) { results.push({ ok: false, error: errText(e) }); }
-      }
-      S.sel = [];
-      const bad = results.filter((r) => !r.ok);
-      toast(`${results.length - bad.length} updated${bad.length ? ` · ${bad.length} refused: ${bad[0].error}` : ''}`, bad.length ? 'warn' : 'ok');
-    });
+    act(async () => { const r = await API.post('/api/oa/bulk', { op: 'transition', ticketIds: ids, to: STATUS_BACK[s], reason: note }); S.sel = []; bulkToast(r, 'updated'); });
   };
   window.doTakeOver = function (id) {
     const l = lead(id); const note = ((document.getElementById('m-note') || {}).value || '').trim();
@@ -427,11 +450,8 @@
   window.assignAll = function () {
     const held = S.leads.filter((l) => !l.ownerId && isOpen(l));
     if (!held.length) return toast('Nothing is being held right now');
-    reasonModal(`Assign ${held.length} held lead(s) over capacity`, 'Each lead goes to the agent with the most free minutes. Audited per ticket.', 'Assign all', (reason) => act(async () => {
-      let ok = 0;
-      for (const l of held) { try { await API.post(`/api/oa/tickets/${l.id}/assign-over-capacity`, { reason }); ok++; } catch { /* reported below */ } }
-      toast(`${ok} of ${held.length} held lead(s) assigned over capacity`, ok === held.length ? 'ok' : 'warn');
-    }));
+    reasonModal(`Assign ${held.length} held lead(s) over capacity`, 'Each lead goes to the agent with the most free minutes. Results are reported per ticket.', 'Assign all',
+      (reason) => act(async () => bulkToast(await API.post('/api/oa/bulk', { op: 'assign_over_capacity', ticketIds: held.map((l) => l.id), reason }), 'assigned over capacity')));
   };
 
   // ───────────── configuration: draft → simulate → publish → roll back (server) ─────────────
@@ -480,7 +500,73 @@
       await API.post('/api/config/publish', { expectedVersion: X.version, note: `${r.on ? 'Disable' : 'Enable'} ${id}` });
     }, `${r.name} — ${r.on ? 'disabled' : 'enabled'}`);
   };
-  window.toggleTpl = function () { toast('Template enable / disable is managed by the WhatsApp connector (step 9).', 'warn'); };
+  window.toggleTpl = function (k) {
+    const on = TPL_STATE[k]?.on;
+    act(() => API.post(`/api/templates/${k}/${on ? 'disable' : 'enable'}`), `${k} ${on ? 'disabled' : 'enabled'}`);
+  };
+
+  // ───────────── admin panels that read the record ─────────────
+  const pctOf = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+  X.perfInsight = function () {
+    const ag = (A.agents || []).filter((a) => a.reg > 0);
+    if (ag.length < 2) return 'Too few leads in this window to compare agents yet — the comparison appears once each agent has worked leads.';
+    const bySpeed = ag.slice().sort((a, b) => a.avgH - b.avgH);
+    const fast = bySpeed[0]; const slow = bySpeed[bySpeed.length - 1];
+    return `${esc(fast.name)} reaches new leads in ${fast.avgH} h on average and activates ${pctOf(fast.act, fast.reg)}%; ${esc(slow.name)} takes ${slow.avgH} h and activates ${pctOf(slow.act, slow.reg)}%.
+      Speed to first contact is the strongest predictor in this table — coach the cadence discipline before the closing skill.`;
+  };
+  X.tplSpendLine = function () {
+    const ag = (A.agents || []).filter((a) => a.tpl > 0).sort((a, b) => b.tpl - a.tpl);
+    return ag.length ? `${ag.map((a) => `${esc(a.name)} ${a.tpl}`).join(' · ')} sends in the last ${A.windowDays} days.` : 'No template sends in this window yet.';
+  };
+  X.tplInsight = function (total) {
+    const rows = Object.entries(TPL_STATE).filter(([, v]) => v.used > 0).sort((a, b) => b[1].used - a[1].used);
+    if (!rows.length) return 'No template has been sent yet. Spend appears here per template once the cadence starts sending.';
+    const [k, v] = rows[0];
+    return `<b>${esc(k)} is ${pctOf(v.used, total)}% of spend.</b> The cohort table shows where activations stop; a follow-up that lands after that point costs a send and recovers little. Changing the cadence is a draft on the Automation page.`;
+  };
+  X.marksNote = () => (A.marks || []).length
+    ? `Every configuration publish in this window is dated on the chart (${A.marks.map((m) => `${esc(m.w)}: ${esc(m.t)}`).join(' · ')}) — the only way to tell whether a rule change caused the movement.`
+    : 'No configuration has been published in this window. Every publish is dated on this chart, so a rule change can be read against the rate it was meant to move.';
+  X.macroUses = (m) => X.macros.find((x) => x.name === m.title)?.usageCount ?? 0;
+  X.qaEmpty = () => `<div class="banner bn-slate tiny">${ic('shield', 14)}<div>No quality reviews yet. Reviews are recorded per conversation by a supervisor; nothing is sampled or scored automatically.</div></div>`;
+  X.mine = function (k) {
+    const a = (A.agents || []).find((x) => x.id === ME);
+    if (!a) return k === 'avgH' ? '—' : 0;
+    if (k === 'tpl') return `${a.tpl} in ${A.windowDays} days`;
+    return a[k];
+  };
+  X.elevationsHTML = function () {
+    if (!X.elevations) return '<p class="tiny muted">Only an Administrator manages elevations.</p>';
+    const rows = X.elevations.map((e) => `<div class="lrow"><div class="grow"><div class="t">${esc(nameOf(e.userId))} → ${esc(e.role.replace('_', ' ').toLowerCase())}</div>
+      <div class="s">${esc(e.reason)} · expires ${fmtT(e.endsAt)}</div></div>
+      <button class="btn btn-ghost btn-sm" onclick="MDM.endElevation('${e.id}')">End now</button></div>`).join('');
+    return `${rows || '<p class="tiny muted" style="margin:0">No elevation is active.</p>'}
+      <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="MDM.grantCover()">${ic('plus', 12)} Grant cover</button>`;
+  };
+  X.endElevation = (id) => reasonModal('End elevation early', 'The user returns to their own role immediately. Audited.', 'End now',
+    (reason) => act(() => API.del(`/api/admin/elevations/${id}`, { reason }), 'Elevation ended — audited'));
+  X.grantCover = function () {
+    const agents = X.users.filter((u) => u.role === 'OA_AGENT');
+    openModal(`<div class="modal-h">${ic('users', 18)}<h3>Grant time-bound cover</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b">
+        <label class="fl">Who</label><select class="fi" id="el-user">${agents.map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select>
+        <label class="fl">Acting as</label><select class="fi" id="el-role"><option value="SHIFT_LEAD">Shift lead</option></select>
+        <label class="fl">Until</label><input class="fi" id="el-end" type="date" value="${new Date(Date.now() + 4 * 86400000).toISOString().slice(0, 10)}">
+        <label class="fl">Reason — required, written to the audit log</label><textarea class="fi" id="m-note" placeholder="Covering leave…"></textarea>
+      </div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" onclick="MDM.doGrant()">Grant</button></div>`);
+  };
+  X.doGrant = function () {
+    const g = (id) => (document.getElementById(id) || {}).value || '';
+    const reason = g('m-note').trim();
+    if (!reason) return toast('A written reason is required.', 'warn');
+    const endsAt = new Date(`${g('el-end')}T16:30:00`).toISOString();
+    closeModal();
+    act(() => API.post('/api/admin/elevations', { userId: g('el-user'), role: g('el-role'), endsAt, reason }), 'Cover granted — it expires by itself');
+  };
   window.togPerm = function () { toast('Roles and grants are fixed by the specification; changes are an Administrator release.', 'warn'); };
 
   // ───────────── boot ─────────────

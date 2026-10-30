@@ -82,7 +82,7 @@ export function computeHealth(seller, stage, c, now = new Date()) {
     key: 'delivery', label: 'Delivery Performance', weight: W.delivery,
     score: isNew ? 50 : Math.round(deliveryPart * 0.65 + returnsPart * 0.35),
     why: isNew ? 'No parcels yet.' : `Delivery ${seller.deliveryRate}% against a ${c['am.deliveryTarget']}% target, returns ${seller.returnRate}%.`,
-    inputs: { deliveryRate: seller.deliveryRate, returnRate: seller.returnRate, deliveryTarget: c['am.deliveryTarget'] },
+    inputs: { deliveryRate: seller.deliveryRate, returnRate: seller.returnRate, cancelRate: seller.cancelRate, deliveryTarget: c['am.deliveryTarget'] },
   });
 
   // Engagement (F5) — computed for display, weighted 0 while the fallback is active

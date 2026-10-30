@@ -403,3 +403,35 @@ export async function runMacro(user, macroId, ticketId, input = {}, { now = new 
   await db.macro.update({ where: { id: macro.id }, data: { usageCount: { increment: 1 } } });
   return { ticket, insertText: a.op === 'book_walkthrough' ? macro.insertText : '' };
 }
+
+// ─────────────────────────── bulk (OA 13.3) ───────────────────────────
+
+const BULK_OPS = {
+  reassign: (user, id, p) => reassign(user, id, p.toUserId, p.reason),
+  transition: (user, id, p) => transition(user, id, p.to, p.reason),
+  assign_over_capacity: (user, id, p) => assignOverCapacity(user, id, p.reason),
+};
+
+/**
+ * One bulk run: each ticket goes through the same service call (and permission check) as a single
+ * action, results are reported per ticket — nothing is skipped silently — and the run itself is
+ * one audit entry carrying the full affected list.
+ */
+export async function bulk(user, { op, ticketIds, ...params }, db = prisma) {
+  if (!BULK_OPS[op]) throw badRequest(`op must be one of ${Object.keys(BULK_OPS).join(', ')}.`);
+  if (!Array.isArray(ticketIds) || !ticketIds.length) throw badRequest('ticketIds must be a non-empty list.');
+  if (ticketIds.length > 200) throw badRequest('At most 200 tickets per bulk run.');
+  if (!params.reason || !String(params.reason).trim()) throw badRequest('A written reason is required for a bulk action.');
+  const results = [];
+  for (const id of ticketIds) {
+    try {
+      await BULK_OPS[op](user, id, params);
+      results.push({ ticketId: id, ok: true });
+    } catch (err) {
+      results.push({ ticketId: id, ok: false, status: err.status ?? 500, error: err.message });
+    }
+  }
+  await logEvent({ actorId: user.id, entityType: 'bulk', entityId: `oa:${op}:${Date.now()}`, action: `bulk.oa_${op}`,
+    after: { params: { ...params, reason: undefined }, results }, reason: params.reason }, db);
+  return { results, succeeded: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length };
+}

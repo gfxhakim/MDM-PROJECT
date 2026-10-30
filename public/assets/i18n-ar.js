@@ -1620,3 +1620,17 @@ Object.assign(window.I18N_AR, {
   );
   Object.assign(window.I18N_AR, { 'Same-day intervention': 'تدخّل في اليوم نفسه', 'Normal cadence': 'إيقاع عادي', 'Contact within 48 hours': 'تواصل خلال 48 ساعة', 'Growth conversation': 'محادثة النمو' });
 })();
+Object.assign(window.I18N_AR, {
+  'No quality reviews yet. Reviews are recorded per conversation by a supervisor; nothing is sampled or scored automatically.': 'لا توجد مراجعات جودة بعد. يسجّل المشرف المراجعات لكل محادثة؛ لا شيء يُختار عيّنةً أو يُقيَّم تلقائياً.',
+  'No template has been sent yet. Spend appears here per template once the cadence starts sending.': 'لم يُرسل أي قالب بعد. يظهر الإنفاق هنا لكل قالب عندما يبدأ الإيقاع بالإرسال.',
+  'No configuration has been published in this window. Every publish is dated on this chart, so a rule change can be read against the rate it was meant to move.': 'لم تُنشر أي إعدادات في هذه الفترة. كل نشر يُؤرَّخ على هذا الرسم، فيمكن قراءة تغيير القاعدة مقابل المعدل الذي قُصد تحريكه.',
+  'Too few leads in this window to compare agents yet — the comparison appears once each agent has worked leads.': 'العملاء في هذه الفترة أقل من أن تُقارن الوكلاء — تظهر المقارنة بعد أن يعمل كل وكيل على عملاء.',
+  'No template sends in this window yet.': 'لا إرسالات قوالب في هذه الفترة بعد.',
+  'No elevation is active.': 'لا توجد صلاحية مؤقتة فعّالة.', 'Grant cover': 'منح تغطية', 'End now': 'إنهاء الآن', 'Grant time-bound cover': 'منح تغطية محددة المدة',
+  'Who': 'من', 'Acting as': 'بصفة', 'Until': 'حتى', 'Grant': 'منح', 'Shift lead': 'مشرف الوردية',
+  'Only an Administrator manages elevations.': 'مسؤول النظام وحده يدير الصلاحيات المؤقتة.',
+  'Moved to Cold by hand — reason on the ticket': 'نُقل إلى غير مهتم يدوياً — السبب على التذكرة',
+  'The trend starts once the nightly recompute has run in two different weeks — it is built from those snapshots and never back-filled.': 'يبدأ الاتجاه بعد أن تعمل إعادة الحساب الليلية في أسبوعين مختلفين — يُبنى من تلك اللقطات ولا يُملأ بأثر رجعي أبداً.',
+  'Retention by cohort needs month-by-month order history from the MDM platform connector. Until it is connected the table stays empty rather than estimated.': 'الاحتفاظ حسب الفئة يحتاج سجل طلبات شهرياً من موصل منصة MDM. حتى يُربط يبقى الجدول فارغاً بدلاً من التقدير.',
+  'Churn reasons come from the save-campaign task outcome. That outcome is not yet structured (open decision D-04), so reasons are not counted — churn is marked by hand with a written reason in the audit trail.': 'أسباب التوقف تأتي من نتيجة مهمة حملة الاستبقاء. تلك النتيجة غير منظمة بعد (القرار المفتوح D-04)، فلا تُحتسب الأسباب — يُسجَّل التوقف يدوياً مع سبب مكتوب في سجل التدقيق.',
+});

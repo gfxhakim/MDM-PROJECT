@@ -15,8 +15,19 @@ import { onboardingBudget } from '../core/templates.js';
 import { onboardingReadWhere } from '../auth/scope.js';
 import { redact } from '../auth/permissions.js';
 import { pickAccountManager } from '../am/handover.js';
+import { onboardingAnalytics } from '../oa/analytics.js';
 
 export const oaRouter = Router();
+
+// Operations / Performance workspaces (OA Part 12) — computed from the record. An agent's report
+// scope is their own row only (reports.view = own): peers' numbers are removed, team totals kept.
+oaRouter.get('/analytics', ah(async (req, res) => {
+  const scope = grant(req.user.role, 'reports.view');
+  if (!scope) throw forbidden('Reports are not part of your role.');
+  const a = await onboardingAnalytics({ days: Math.min(Math.max(Number(req.query.days) || 90, 7), 365) });
+  if (scope === 'own') a.agents = a.agents.filter((x) => x.id === req.user.id);
+  res.json(a);
+}));
 
 // Every lead the caller may read, with its conversation and timeline — what the console renders.
 oaRouter.get('/leads', ah(async (req, res) => {
@@ -73,6 +84,7 @@ oaRouter.get('/tickets/:id', ah(async (req, res) => {
 }));
 
 oaRouter.patch('/tickets/:id', ah(async (req, res) => res.json(await oa.updateTicket(req.user, req.params.id, req.body ?? {}))));
+oaRouter.post('/bulk', ah(async (req, res) => res.json(await oa.bulk(req.user, req.body ?? {}))));
 oaRouter.post('/tickets/:id/transition', ah(async (req, res) => res.json(await oa.transition(req.user, req.params.id, req.body?.to, req.body?.reason))));
 oaRouter.post('/tickets/:id/log-call', ah(async (req, res) => res.json(await oa.logCall(req.user, req.params.id, req.body?.outcome, req.body?.note))));
 oaRouter.post('/tickets/:id/book-walkthrough', ah(async (req, res) => res.json(await oa.bookWalkthrough(req.user, req.params.id, req.body ?? {}))));

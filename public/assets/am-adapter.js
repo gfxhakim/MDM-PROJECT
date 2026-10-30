@@ -143,6 +143,39 @@
     };
   };
 
+  // ───────────── performance & analytics (server aggregates) ─────────────
+  const protoPerfOf = window.perfOf;
+  window.perfOf = function (id) {
+    const P = X.analytics?.perf?.[id] || {};
+    const base = protoPerfOf(id); // book-derived parts (retention, activation, welcome SLA, delivery now)
+    const dq0 = P.dq0 ?? base.delivery; const cq0 = P.cq0 ?? base.cancel;
+    return {
+      ...base, nrr: P.nrr ?? null, deliveryDelta: base.delivery - dq0, cancelDelta: base.cancel - cq0,
+      upgrades: P.upgrades ?? null, upgradePct: P.upgrades == null ? null : (base.book ? Math.round(P.upgrades / base.book * 100) : 0),
+      expansions: P.expansions ?? 0, csat: P.csat ?? null, respH: P.respH ?? null,
+      qbr: P.qbrDue ? Math.round(P.qbrDone / P.qbrDue * 100) : 100,
+    };
+  };
+  window.kpiVal = (P, k) => (P[k] === null || P[k] === undefined ? '—' : P[k]);
+  // A measure with no data source earns nothing and is shown as not wired — never as zero.
+  const protoKpiPct = window.kpiPct;
+  window.kpiPct = (r, v) => (typeof v === 'number' ? protoKpiPct(r, v) : 0);
+  X.pct = (v) => (v === null || v === undefined ? '—' : `${v}%`);
+  X.accepted = () => X.analytics?.coverage?.acceptedSellers ?? S.sellers.length;
+  X.covered = () => X.analytics?.coverage?.withManager ?? S.sellers.filter((s) => s.amId).length;
+  X.series = (k) => { const t = X.analytics?.trend; if (!t) return []; return t.weeks.map((w, i) => ({ k: w, v: t[k]?.[i] })).filter((p) => typeof p.v === 'number'); };
+  const protoTrend = window.trendChart;
+  window.trendChart = function (series, opts) {
+    if (!series || series.length < 2) {
+      return `<div class="banner bn-slate tiny">${ic('chart', 14)}<div>The trend starts once the nightly recompute has run in two different weeks — it is built from those snapshots and never back-filled.</div></div>`;
+    }
+    return protoTrend(series, opts);
+  };
+  X.cohorts = () => [];
+  X.cohortNote = () => 'Retention by cohort needs month-by-month order history from the MDM platform connector. Until it is connected the table stays empty rather than estimated.';
+  X.churnReasons = () => [];
+  X.churnNote = () => 'Churn reasons come from the save-campaign task outcome. That outcome is not yet structured (open decision D-04), so reasons are not counted — churn is marked by hand with a written reason in the audit trail.';
+
   // ───────────── load ─────────────
   async function reload() {
     const [bundle, users, capacity, cfg] = await Promise.all([
@@ -157,8 +190,8 @@
       id: u.id, name: u.name, init: initials(u.name), color: COLORS[i % COLORS.length],
       country: COUNTRY[JSON.parse(u.markets || '[]')[0]] || '—', number: u.businessNumber || '—',
     }));
-    if (!TEAM.some((t) => t.id === ME)) TEAM.push({ id: ME, name: X.me.name, init: initials(X.me.name), color: '#4F46E5', country: '—', number: '—' });
     S.sellers = bundle.sellers.map(sellerOf);
+    X.analytics = await API.get('/api/am/analytics').catch(() => null);
     if (S.role === 'admin') await loadAdmin();
     render();
   }
@@ -344,12 +377,10 @@
     const due = +(document.getElementById('m-due') || {}).value || 7;
     closeModal();
     act(async () => {
-      let ok = 0; const errors = [];
-      for (const id of ids) {
-        try { await API.post(`/api/am/sellers/${id}/tasks`, { taskType: type, title: `${title} — ${seller(id).biz}`, why, dueAt: new Date(Date.now() + due * 86400000).toISOString() }); ok++; } catch (e) { errors.push(errText(e)); }
-      }
+      const r = await API.post('/api/am/bulk-tasks', { sellerIds: ids, taskType: type, title, why, dueAt: new Date(Date.now() + due * 86400000).toISOString() });
       S.sel = [];
-      toast(`${ok} task(s) opened${errors.length ? ` · ${errors.length} refused: ${errors[0]}` : ''}`, errors.length ? 'warn' : 'ok');
+      const bad = r.results.filter((x) => !x.ok);
+      toast(`${r.succeeded} task(s) opened${bad.length ? ` · ${bad.length} refused: ${bad[0].error}` : ''}`, bad.length ? 'warn' : 'ok');
     });
   };
   window.doTakeOver = function (id) {
