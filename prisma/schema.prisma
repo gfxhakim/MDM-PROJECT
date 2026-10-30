@@ -25,13 +25,33 @@ model User {
   shiftMinutes   Int       @default(480)
   active         Boolean   @default(true)
   onCall         Boolean   @default(false) // Yeastar presence; manual toggle until PBX wired
+  extension      String?   @unique // Yeastar extension, maps PBX call events to the agent
   lastAssignedAt DateTime? // AM assignment tie-break
   createdAt      DateTime  @default(now())
 
   contactsOwned  Contact[] @relation("ContactOwner")
   ticketsAssigned Ticket[] @relation("TicketAssignee")
   sellersManaged Seller[]  @relation("SellerAM")
+  notifications  Notification[]
   messages       Message[]
+  elevations     RoleElevation[] @relation("ElevatedUser")
+}
+
+// Temporary elevation (OA 9.3): cover for leave is time-bound. While active, the user acts as
+// `role`; it expires automatically at endsAt and the reversion is audited.
+model RoleElevation {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation("ElevatedUser", fields: [userId], references: [id])
+  role        String
+  reason      String
+  grantedById String?
+  startsAt    DateTime  @default(now())
+  endsAt      DateTime
+  revokedAt   DateTime? // set early by an Admin, or by the expiry sweep at endsAt
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, endsAt])
 }
 
 // ───────────────────────── Platform core ─────────────────────────
@@ -65,14 +85,19 @@ model Conversation {
   businessNumber String? // the company number the thread runs on
   lastInboundAt  DateTime? // drives the 24h session window
   lastOutboundAt DateTime?
+  // Admin take-over of a conversation with no open onboarding ticket (AM monitoring). While set,
+  // only this user may reply; released explicitly. Onboarding take-over reassigns the ticket instead.
+  takenOverById  String?
+  takenOverAt    DateTime?
   createdAt      DateTime  @default(now())
 
   messages Message[]
 
-  @@index([contactId])
+  @@unique([contactId]) // one conversation per contact, for life
 }
 
-// direction: in | out ; kind: text | template | call_event | note | system
+// direction: in | out | internal ; kind: text | template | call_event | note | system
+// internal = notes and system lines, never shown to the contact
 model Message {
   id             String   @id @default(cuid())
   conversationId String
@@ -85,6 +110,8 @@ model Message {
   authorUserId   String?
   author         User?    @relation(fields: [authorUserId], references: [id])
   legacy         Boolean  @default(false)
+  externalId     String?  @unique // provider message id (WhatsApp wamid, Yeastar call id) — dedupes webhooks
+  deliveryStatus String?  // queued | sent | delivered | read | failed | not_sent (no transport configured)
   createdAt      DateTime @default(now())
 
   @@index([conversationId, createdAt])
@@ -116,6 +143,9 @@ model Ticket {
   nextFollowupAt DateTime?
   cadenceReset   Boolean  @default(false)
   holdReason     String?  // never null while unassigned
+  heldAt         DateTime? // when it entered the holding queue (r8 escalation clock)
+  stalledReason  String?  // written reason required once open past stalled_day (OA 5.5)
+  tags           String   @default("[]") // JSON array, e.g. oa_cold_no_answer
   walkthroughAt  DateTime?
   walkthroughMode String? // phone | meet | whatsapp_video
   qualification  String   @default("{}") // JSON: 5 booleans (OA 8.1)
@@ -131,6 +161,7 @@ model Ticket {
   ruleId    String?  // dedup key (AM 2.5)
   alertKey  String?
   escalated Boolean  @default(false)
+  escalatedAt DateTime?
   escalationReason String?
   outcome   String?  // required to close an am_task
 
@@ -164,12 +195,15 @@ model Seller {
   marketsServed       Int     @default(1)
   momGrowthPct        Float   @default(0)
   lastOrderAt         DateTime?
+  totalOrders         Int     @default(0)    // lifetime orders (playbook gates)
+  weeklyReturnRates   String  @default("[]") // JSON, weeks 1..8 oldest first (r6 "sustained")
   // Feature F5 (not yet written by MDM platform — Engagement fallback applies)
   lastLoginAt         DateTime?
   lastStoreUpdateAt   DateTime?
   lastProductAddedAt  DateTime?
 
   lastContactAt  DateTime?
+  lastSyncedAt   DateTime? // last mirror update from the MDM platform connector or an import
   lastReviewAt   DateTime?
   churnedAt      DateTime? // set by hand until D-04 structured outcome exists
   welcomeCallAt  DateTime?
@@ -278,4 +312,33 @@ model EventLog {
 
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// In-app notifications (rules' notify(...) action). dedupeKey makes every rule notification
+// idempotent: a sweep run twice notifies once.
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  kind      String    // e.g. oa.r3.attempt_due
+  title     String
+  body      String?
+  ticketId  String?
+  dedupeKey String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt])
+}
+
+// One run of an integration (MDM sync, Zoho import, …): what it did, with per-row results.
+model IntegrationRun {
+  id         String    @id @default(cuid())
+  kind       String    // mdm_sync | zoho_import
+  status     String    // dry_run | completed | failed
+  actorId    String?
+  summary    String    @default("{}") // JSON counts + per-row results
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
 }
