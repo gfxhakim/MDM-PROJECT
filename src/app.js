@@ -6,9 +6,12 @@ import { adminRouter } from './routes/admin.js';
 import { coreRouter } from './routes/core.js';
 import { oaRouter } from './routes/oa.js';
 import { registerOnboarding } from './oa/index.js';
+import { amRouter } from './routes/am.js';
+import { registerAccountManagement } from './am/index.js';
 
 export function createApp() {
   registerOnboarding();
+  registerAccountManagement();
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
@@ -18,6 +21,7 @@ export function createApp() {
   app.use('/api/config', authenticate, configRouter);
   app.use('/api/admin', authenticate, adminRouter);
   app.use('/api/oa', authenticate, oaRouter);
+  app.use('/api/am', authenticate, amRouter);
   app.use('/api', authenticate, coreRouter);
 
   app.use('/api', (_req, res) => res.status(404).json({ error: { code: 'not_found', message: 'No such endpoint.' } }));

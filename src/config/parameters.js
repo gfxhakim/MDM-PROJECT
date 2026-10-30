@@ -185,6 +185,9 @@ const AM = [
     ['mQbr', 45, 'Business review', 'Calibrated, not measured — D-09.'],
     ['mCoach', 30, 'Coaching session', 'Minutes booked for a coaching session.'],
     ['mIntervention', 25, 'Intervention', 'Minutes booked for an intervention call.'],
+    // Not an Appendix D row, but AM 2.3 books a save task at 35 minutes and says every
+    // minute value is configuration, not code.
+    ['mSave', 35, 'Save campaign', 'Minutes booked for a save-campaign call.'],
     ['mExpansion', 40, 'Expansion session', 'Minutes booked for a cross-market briefing.'],
     ['mCoord', 15, 'Coordination', 'Minutes booked for internal coordination on a seller.'],
   ].map(([k, d, label, help]) => p(`am.${k}`, d, 'min', 'Admin', 'am.time_model', label, help, num(0, 480))),

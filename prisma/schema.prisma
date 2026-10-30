@@ -158,6 +158,7 @@ model Ticket {
   ruleId    String?  // dedup key (AM 2.5)
   alertKey  String?
   escalated Boolean  @default(false)
+  escalatedAt DateTime?
   escalationReason String?
   outcome   String?  // required to close an am_task
 
@@ -191,6 +192,8 @@ model Seller {
   marketsServed       Int     @default(1)
   momGrowthPct        Float   @default(0)
   lastOrderAt         DateTime?
+  totalOrders         Int     @default(0)    // lifetime orders (playbook gates)
+  weeklyReturnRates   String  @default("[]") // JSON, weeks 1..8 oldest first (r6 "sustained")
   // Feature F5 (not yet written by MDM platform — Engagement fallback applies)
   lastLoginAt         DateTime?
   lastStoreUpdateAt   DateTime?
