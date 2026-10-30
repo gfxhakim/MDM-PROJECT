@@ -267,7 +267,8 @@ test('elevation: Admin-only, reason required, time-bound, effective immediately,
 });
 
 test('unknown API routes and bad JSON get JSON errors', async () => {
-  assert.equal((await call('GET', '/api/nope')).status, 404);
+  assert.equal((await call('GET', '/api/nope', { token: await tokenFor('admin') })).status, 404);
+  assert.equal((await call('GET', '/api/nope')).status, 401);
   const res = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{bad' });
   assert.equal(res.status, 400);
 });

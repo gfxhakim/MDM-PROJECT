@@ -3,6 +3,7 @@ import { authenticate } from './auth/middleware.js';
 import { authRouter } from './routes/auth.js';
 import { configRouter } from './routes/config.js';
 import { adminRouter } from './routes/admin.js';
+import { coreRouter } from './routes/core.js';
 
 export function createApp() {
   const app = express();
@@ -13,6 +14,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/config', authenticate, configRouter);
   app.use('/api/admin', authenticate, adminRouter);
+  app.use('/api', authenticate, coreRouter);
 
   app.use('/api', (_req, res) => res.status(404).json({ error: { code: 'not_found', message: 'No such endpoint.' } }));
 

@@ -32,4 +32,28 @@ for (const u of USERS) {
   created++;
 }
 console.log(`Users: ${created} created, ${USERS.length - created} already present.${created ? ` Dev password: ${password}` : ''}`);
+// Launch templates (OA 7.5, AM 7.6) — wording from the prototypes. All utility category.
+// Seeded as approved for development; the WhatsApp connector (step 9) syncs real Meta status.
+const TEMPLATES = [
+  ['oa_intro_v2', 'oa', 'Salam {{1}}, this is {{2}} from MDM Express. You registered with us — I tried to reach you by phone. When is a good time for a two-minute call?'],
+  ['oa_slot_proposal_v3', 'oa', '{{1}}, I can walk you through MDM with your own numbers on the pricing calculator. I have {{2}} or {{3}} — which works better?'],
+  ['oa_hub_share_v1', 'oa', '{{1}}, everything we would have covered on the call is here: {{2}} — the recorded walkthrough, pricing for {{3}}, and how COD payouts work.'],
+  ['oa_nudge_v2', 'oa', '{{1}}, what is holding you back — pricing, trust, or timing? Answer with one word and I will clear it up in a line.'],
+  ['oa_winback_d30', 'oa', '{{1}}, we have added {{2}} since we last spoke. If you want to start, I can activate your account today. Reply anytime to reopen.', false],
+  ['am_welcome_v1', 'am', 'Salam {{1}}, I am {{2}}, your account manager at MDM Express. I will call you within 24 hours to set your store up properly. Is now a good time, or later today?'],
+  ['am_inactive_v2', 'am', '{{1}}, I noticed no orders on your store for {{2}} days. Is something blocking you — stock, pricing, or the store itself? Tell me and I will fix it today.'],
+  ['am_returns_v1', 'am', '{{1}}, your return rate is running at {{2}}%. Most of it comes down to product photos and confirmation calls. Can I take 20 minutes with you this week to bring it down?'],
+  ['am_qbr_invite_v1', 'am', '{{1}}, it is time for our quarterly review. I have your numbers for the last 90 days and two ideas to grow {{2}}. When suits you this week?'],
+  ['am_save_v1', 'am', '{{1}}, we have not shipped for you in {{2}} days and I would rather fix that than lose you. Tell me what went wrong and I will make it right — I can also put you on our reduced rate for a month.'],
+  ['am_expansion_v1', 'am', '{{1}}, your products would sell in {{2}}. We already deliver there. I can set you up with a test batch of 10–20 orders at no extra setup cost. Interested?'],
+];
+let tplCreated = 0;
+for (const [key, module, bodyEn, enabled = true] of TEMPLATES) {
+  if (await prisma.template.findUnique({ where: { key } })) continue;
+  // oa_winback_d30 ships disabled with rule r9 (OA 5.5, decision 10).
+  await prisma.template.create({ data: { key, module, category: 'utility', bodyEn, status: 'approved', enabled } });
+  tplCreated++;
+}
+console.log(`Templates: ${tplCreated} created, ${TEMPLATES.length - tplCreated} already present.`);
+
 await prisma.$disconnect();

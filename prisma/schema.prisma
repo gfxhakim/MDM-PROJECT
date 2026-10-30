@@ -83,14 +83,19 @@ model Conversation {
   businessNumber String? // the company number the thread runs on
   lastInboundAt  DateTime? // drives the 24h session window
   lastOutboundAt DateTime?
+  // Admin take-over of a conversation with no open onboarding ticket (AM monitoring). While set,
+  // only this user may reply; released explicitly. Onboarding take-over reassigns the ticket instead.
+  takenOverById  String?
+  takenOverAt    DateTime?
   createdAt      DateTime  @default(now())
 
   messages Message[]
 
-  @@index([contactId])
+  @@unique([contactId]) // one conversation per contact, for life
 }
 
-// direction: in | out ; kind: text | template | call_event | note | system
+// direction: in | out | internal ; kind: text | template | call_event | note | system
+// internal = notes and system lines, never shown to the contact
 model Message {
   id             String   @id @default(cuid())
   conversationId String
