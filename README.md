@@ -47,21 +47,24 @@ Health check: `GET /api/health` (configured in `railway.json`).
 
 ## Integrations
 
-All optional. Each one is configured by environment variables (see `.env.example`); without them the
-app runs on imported or seeded data and the Admin's `/integrations` page says what is not connected.
+For now only the **MDM platform** is on (webhook + API key). The full contract, including what the
+MDM team still has to provide, is in `docs/mdm-integration.md`. The Admin's `/integrations` page
+shows the state of each direction, with Sync now, Full resync and Send now.
 
-| Connector | Endpoint | Auth |
+| Direction | Endpoint | Auth |
 |---|---|---|
-| MDM platform, pushed events (`merchant.registered`, `order.created`, `seller.metrics`) | `POST /api/integrations/mdm/events` | `X-MDM-Key` = `MDM_WEBHOOK_SECRET` |
-| MDM platform, pull sync (hourly, or "Sync now") | `GET {MDM_API_URL}/sellers?updated_since=…` | `x-api-key` = `MDM_API_KEY` |
-| WhatsApp Cloud API webhook (messages, delivery statuses) | `GET`/`POST /api/integrations/whatsapp/webhook` | verify token + `X-Hub-Signature-256` |
-| Yeastar PBX call events and presence | `POST /api/integrations/yeastar/events` | `X-Yeastar-Secret` |
-| Zoho CRM import (CSV or Excel, leads or sellers) | `/integrations` page → `POST /api/integrations/import` | Admin sign-in |
+| MDM → app, pull (every 15 min, or "Sync now") | `POST https://api.mdm.express/api/stores/search`, `/api/v2/orders/search`, `GET /api/v2/orders/statistics/statuses` | `x-api-key` = `MDM_API_KEY` |
+| MDM → app, webhook (`merchant.registered`, `seller.upserted`, `order.created`, `seller.metrics`) | `POST /api/integrations/mdm/events` | `X-MDM-Key` = `MDM_WEBHOOK_SECRET` |
+| app → MDM, our updates (every 60 s, or "Send now") | `POST {MDM_WRITEBACK_URL}` | `x-api-key` = `MDM_API_KEY` |
 
-Connectors only write the seller *mirror* (orders, delivery, wallet, catalogue). Health score and
-lifecycle stage are refused if sent; the nightly recompute derives them. Webhook retries are
-idempotent (provider message ids are stored once). Every import is previewed first and committed as
-one audited run.
+The first sync (and Full resync) reads every store: a seller with orders joins the book (same
+market, smallest book), a store with no orders yet becomes an onboarding lead. Connectors only write
+the seller *mirror* (orders, delivery, wallet, catalogue). Health score and lifecycle stage are
+refused if sent; the nightly recompute derives them.
+
+WhatsApp Business, Yeastar and the Zoho import are still in the code and tested, but switched off:
+their routes answer 404 and they are not on the page. List them in `OPTIONAL_INTEGRATIONS`
+(e.g. `whatsapp,yeastar,zoho`) to bring them back; their settings are in `.env.example`.
 
 ## Tests
 

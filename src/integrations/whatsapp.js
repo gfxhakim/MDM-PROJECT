@@ -10,6 +10,7 @@
 // enforced before a message is written, so the transport never decides policy. Without
 // credentials the platform still works: messages are kept with deliveryStatus "not_sent" and the
 // integration status says so.
+import { optionalOn } from './optional.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { prisma } from '../db.js';
 import { on } from '../core/events.js';
@@ -117,5 +118,5 @@ export async function deliver({ conversation, message, template, variables }, db
 }
 
 export function registerWhatsapp() {
-  on('message.sent', 'whatsapp.deliver', (p) => (['text', 'template'].includes(p.message.kind) ? deliver(p) : null));
+  on('message.sent', 'whatsapp.deliver', (p) => (optionalOn('whatsapp') && ['text', 'template'].includes(p.message.kind) ? deliver(p) : null));
 }

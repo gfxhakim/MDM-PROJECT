@@ -9,9 +9,9 @@ import { startApp } from './helpers/http.js';
 useTestDatabase('integrations');
 process.env.JWT_SECRET = 'test-secret';
 Object.assign(process.env, {
-  WHATSAPP_APP_SECRET: 'wa-secret', WHATSAPP_VERIFY_TOKEN: 'wa-verify', MDM_WEBHOOK_SECRET: 'mdm-key', YEASTAR_WEBHOOK_SECRET: 'pbx-key',
+  OPTIONAL_INTEGRATIONS: 'whatsapp,yeastar,zoho', WHATSAPP_APP_SECRET: 'wa-secret', WHATSAPP_VERIFY_TOKEN: 'wa-verify', MDM_WEBHOOK_SECRET: 'mdm-key', YEASTAR_WEBHOOK_SECRET: 'pbx-key',
 });
-delete process.env.WHATSAPP_TOKEN; delete process.env.MDM_API_URL; delete process.env.YEASTAR_API_URL;
+delete process.env.WHATSAPP_TOKEN; delete process.env.MDM_API_URL; delete process.env.MDM_API_KEY; delete process.env.MDM_WRITEBACK_URL; delete process.env.YEASTAR_API_URL;
 const { prisma } = await import('../src/db.js');
 const { createApp } = await import('../src/app.js');
 const cfg = await import('../src/config/service.js');
@@ -121,27 +121,48 @@ test('MDM events: key required; registrations, orders and metrics; derived field
   assert.equal(after.healthScore, null); assert.equal(after.healthStale, true); assert.ok(after.lastSyncedAt);
 });
 
-test('MDM pull sync: refused when unset; pages through the API, records a run and one audit entry', async () => {
+test('MDM pull sync: refused when unset; reads stores and orders, updates known sellers, creates new ones, one audit entry', async () => {
   const r = await app.call('POST', '/api/integrations/mdm/sync', { token: await tok('admin') });
   assert.equal(r.status, 503); assert.equal(r.body.error.code, 'not_configured');
 
   await seller('MDM-S-3', '+218915550030', U.yassine.id);
-  process.env.MDM_API_URL = 'https://mdm.example'; process.env.MDM_API_KEY = 'k';
+  process.env.MDM_API_KEY = 'k';
   const calls = [];
+  const ORDERS = { 'MDM-S-3': 40, 'MDM-S-NEW': 12, 'MDM-S-LEAD': 0 };
   const fetchImpl = async (url, opts) => {
-    calls.push([url, opts.headers['x-api-key']]);
-    const page = url.includes('page=2')
-      ? { data: [{ mdmRef: 'MDM-S-404', totalOrders: 3 }], next: null }
-      : { data: [{ mdmRef: 'MDM-S-3', totalOrders: 40, weeklyOrders: [1, 2, 3, 4, 5, 6, 7, 8, 9] }], next: 'https://mdm.example/sellers?page=2' };
-    return { ok: true, json: async () => page };
+    const body = opts.body ? JSON.parse(opts.body) : null;
+    calls.push({ url, key: opts.headers['x-api-key'], body });
+    let out;
+    if (url.includes('/api/stores/search')) {
+      out = body.pagination.page === 1
+        ? { data: [{ trackingId: 'st1', sellerId: 'MDM-S-3', name: 'Known', phones: ['+218915550030'] }, { trackingId: 'st2', sellerId: 'MDM-S-NEW', name: 'Old Seller', phones: ['+218915550031'], createdAt: '2025-01-10T00:00:00Z' }], pagination: { hasMore: true, nextPage: 2 } }
+        : { data: [{ trackingId: 'st3', sellerId: 'MDM-S-LEAD', name: 'New Merchant', phones: ['+218915550032'] }, { trackingId: 'st4', sellerId: 'MDM-S-FR', name: 'Paris', phones: ['+33612345678'] }], pagination: { hasMore: false, nextPage: null } };
+    } else if (url.includes('/api/v2/orders/statistics/statuses')) {
+      out = { data: [{ status: 'delivered', count: 80 }, { status: 'returned', count: 15 }, { status: 'cancelled', count: 5 }] };
+    } else {
+      const id = body.sellerId?.[0];
+      const total = body.createdAt ? (ORDERS[id] ? 1 : 0) : ORDERS[id] ?? 0;
+      out = { data: total ? [{ trackingId: 'o1', sellerId: id, createdAt: '2026-10-29T10:00:00Z' }] : [], pagination: { total, hasMore: false } };
+    }
+    return { ok: true, json: async () => out };
   };
+  let s;
   try {
-    const s = await syncSellers({ actorId: U.admin.id, fetchImpl });
-    assert.deepEqual([s.fetched, s.updated, s.unknown], [2, 1, ['MDM-S-404']]);
-  } finally { delete process.env.MDM_API_URL; delete process.env.MDM_API_KEY; }
-  assert.equal(calls[0][1], 'k'); assert.match(calls[0][0], /updated_since=/);
-  const sel = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-3' } });
-  assert.equal(sel.totalOrders, 40); assert.deepEqual(JSON.parse(sel.weeklyOrders), [2, 3, 4, 5, 6, 7, 8, 9]);
+    s = await syncSellers({ actorId: U.admin.id, fetchImpl });
+  } finally { delete process.env.MDM_API_KEY; }
+  assert.equal(calls[0].key, 'k'); assert.match(calls[0].url, /^https:\/\/api\.mdm\.express\/api\/stores\/search/);
+  assert.equal(s.full, true);
+  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skipped.length], [4, 1, 1, 1, 1]);
+  const known = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-3' } });
+  assert.equal(known.totalOrders, 40); assert.deepEqual(JSON.parse(known.weeklyOrders), [1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.equal(known.deliveryRate, 80); assert.equal(known.returnRate, 15); assert.equal(known.cancelRate, 5);
+  assert.equal(known.assignedAccountManagerId, U.yassine.id);
+  assert.equal(known.healthScore, null, 'health is never read from the platform');
+  const created = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-NEW' }, include: { contact: true } });
+  assert.equal(created.market, 'LY'); assert.equal(created.totalOrders, 12); assert.ok(created.assignedAccountManagerId);
+  const lead = await prisma.contact.findUnique({ where: { phone: '+218915550032' } });
+  assert.equal(lead.contactType, 'merchant');
+  assert.ok(await prisma.ticket.findFirst({ where: { contactId: lead.id, type: 'onboarding_task' } }));
   assert.equal(await prisma.integrationRun.count({ where: { kind: 'mdm_sync', status: 'completed' } }), 1);
   assert.equal(await prisma.eventLog.count({ where: { action: 'mdm.sync' } }), 1);
 });
