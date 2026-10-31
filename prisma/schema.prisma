@@ -70,11 +70,14 @@ model Contact {
   blockReason  String?
   sourceUtm    String?   // channel + UTM / affiliate tag, immutable after creation
   legacy       Boolean   @default(false) // imported from Zoho
+  mdmRef       String?   // the merchant's seller id on the MDM platform (trackingId), once known
   createdAt    DateTime  @default(now())
 
   conversations Conversation[]
   tickets       Ticket[]
   seller        Seller?
+
+  @@index([mdmRef])
 }
 
 model Conversation {

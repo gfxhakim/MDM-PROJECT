@@ -1,70 +1,99 @@
-// Reads the client's MDM platform API (https://api.mdm.express, docs on registry.scalar.com
-// @mdmexpress/mdm-api) and turns it into the records the app works on:
-//   • stores  → one merchant per sellerId (phone, name, country, created date);
-//   • orders  → each seller's platform figures: 8 weeks of order counts, delivery / return /
-//               cancel rates over those weeks, lifetime orders and the last order date.
+// The client's MDM platform API (https://api.mdm.express; OpenAPI served at /api/docs/swagger).
+// Only the endpoints this app needs, with the request and response shapes from that spec:
+//   • POST /api/sellers/search                      → { list: Seller[], pagination }
+//       Seller: trackingId, firstName, lastName, phones[], country {id, code}, joinStatus,
+//       joinStatusDate, accountManager {trackingId}, utm {utmSource}, createdAt, updatedAt
+//   • POST /api/v2/orders/search                     → { list: Order[], pagination }   filters.sellerId, createdAt, updatedAt
+//   • GET  /api/v2/orders/statistics/statuses        → { list: [{ status, total }] }   query sellerId, createdAt
+//   • POST /api/finance/seller-payments/wallets/search → { list: [{ seller, ready, notReady, paid }] }
+//       needs filters.countryId and the x-payment-password header
+//   • POST /api/omni-channel/account-managers/search  → { list: [{ trackingId, email, … }] }
+//   • POST /api/omni-channel/account-managers/sellers/{sellerId}  { accountManagerId }
+//   • PATCH /api/sellers/{id}/join/not-answer | followup | missing-documents  { notes }
+// Every list call pages with pagination { page, perPage }. Auth: x-api-key.
 // Health and lifecycle stage are never read from the platform: they are derived here (AC-03).
-//
-// The public docs list the paths, the x-api-key header, the sellerId filter, date-range filters
-// and page/perPage paging, but cut off before the field lists. Every field name the code relies on
-// is therefore read through the small helpers below, tolerant of the likely shapes, so that the
-// full OpenAPI file only means adjusting this one file.
 const WEEK = 7 * 86_400_000;
 
 export const PATHS = {
-  stores: '/api/stores/search',
+  sellers: '/api/sellers/search',
   orders: '/api/v2/orders/search',
   statuses: '/api/v2/orders/statistics/statuses',
+  wallets: '/api/finance/seller-payments/wallets/search',
+  managers: '/api/omni-channel/account-managers/search',
+  assignManager: (sellerId) => `/api/omni-channel/account-managers/sellers/${encodeURIComponent(sellerId)}`,
+  join: (sellerId, kind) => `/api/sellers/${encodeURIComponent(sellerId)}/join/${kind}`,
 };
 
-const itemsOf = (b) => b?.data ?? b?.items ?? b?.results ?? b?.stores ?? b?.orders ?? [];
-const totalOf = (b) => Number(b?.pagination?.total ?? b?.total ?? b?.meta?.total ?? itemsOf(b).length) || 0;
-const hasMore = (b) => !!(b?.pagination?.hasMore ?? (b?.pagination?.nextPage != null && b?.pagination?.nextPage !== undefined));
-const sellerIdOf = (x) => x?.sellerId ?? x?.seller?.trackingId ?? x?.seller?.id ?? x?.seller ?? null;
 const dateOf = (v) => { if (!v) return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d; };
 
-export function client({ url, apiKey, fetchImpl = fetch }) {
-  const call = async (method, path, { body, query } = {}) => {
+export class MdmApiError extends Error {
+  constructor(status, method, path, body) {
+    super(`MDM API ${method} ${path} responded ${status}${body?.error?.message ? `: ${body.error.message}` : ''}`);
+    this.status = status;
+  }
+}
+
+export function client({ url, apiKey, paymentPassword = null, fetchImpl = fetch }) {
+  const call = async (method, path, { body, query, headers = {} } = {}) => {
     const qs = query ? `?${query}` : '';
     const res = await fetchImpl(`${url}${path}${qs}`, {
       method,
-      headers: { 'x-api-key': apiKey, accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}) },
+      headers: { 'x-api-key': apiKey, accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}), ...headers },
       body: body ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) throw new Error(`MDM API ${method} ${path} responded ${res.status}`);
-    return res.json();
+    let json = null;
+    try { json = await res.json(); } catch { /* empty body */ }
+    if (!res.ok) throw new MdmApiError(res.status, method, path, json);
+    return json;
   };
+  const page = (path, { filters, sortBy, headers } = {}, p = 1, perPage = 100) =>
+    call('POST', path, { body: { ...(filters ? { filters } : {}), ...(sortBy ? { sortBy } : {}), pagination: { page: p, perPage } }, headers });
   return {
     call,
-    /** Every page of a search endpoint. */
-    async *search(path, filters = {}, perPage = 100, maxPages = 1000) {
-      for (let page = 1; page <= maxPages; page++) {
-        const body = await call('POST', path, { body: { ...filters, pagination: { page, perPage } } });
-        for (const item of itemsOf(body)) yield item;
-        if (!hasMore(body)) return;
+    /** Every item of a search endpoint, page by page. */
+    async *search(path, opts = {}, perPage = 100, maxPages = 1000) {
+      for (let p = 1; p <= maxPages; p++) {
+        const body = await page(path, opts, p, perPage);
+        for (const item of body?.list ?? []) yield item;
+        if (!body?.pagination?.hasMore) return;
       }
     },
     /** How many records a search matches, without reading them. */
     async count(path, filters) {
-      return totalOf(await call('POST', path, { body: { ...filters, pagination: { page: 1, perPage: 1 } } }));
+      return Number((await page(path, { filters }, 1, 1))?.pagination?.total) || 0;
     },
+    async first(path, opts) {
+      return (await page(path, opts, 1, 1))?.list?.[0] ?? null;
+    },
+    paymentPassword,
   };
 }
 
-/** A store record → the merchant row upsertFromMdm expects. */
-export function storeToRow(store) {
-  const phones = Array.isArray(store.phones) ? store.phones : [store.phone].filter(Boolean);
-  const country = typeof store.country === 'string' && /^[A-Za-z]{2}$/.test(store.country) ? store.country.toUpperCase()
-    : store.country?.code ?? store.country?.iso2 ?? null;
-  return { mdmRef: sellerIdOf(store) ?? store.trackingId, phone: phones[0] ?? null, name: store.name ?? null, country, createdAt: dateOf(store.createdAt) };
+/** A platform seller → the row upsertFromMdm expects. */
+export function sellerToRow(s) {
+  return {
+    mdmRef: s.trackingId,
+    phone: s.phones?.[0] ?? null,
+    name: [s.firstName, s.lastName].filter(Boolean).join(' ').trim() || null,
+    country: s.country?.code ?? null,
+    countryId: s.country?.id ?? null,
+    joinStatus: s.joinStatus ?? null,
+    joinStatusDate: dateOf(s.joinStatusDate),
+    createdAt: dateOf(s.createdAt),
+    updatedAt: dateOf(s.updatedAt),
+    utm: s.utm?.utmSource ?? null,
+    accountManagerRef: s.accountManager?.trackingId ?? null,
+  };
 }
 
-/** Order status counts, in whichever shape the statistics endpoint returns them, → rates in %. */
+// joinStatus values are not enumerated in the spec (GET /api/sellers/metadata lists them at run
+// time), so they are read by meaning.
+export const isAccepted = (status) => /accept|approv|activ/i.test(status ?? '');
+export const isRejected = (status) => /reject|refus|declin/i.test(status ?? '');
+
+/** Order status totals → rates in %. */
 export function ratesFromStatuses(body) {
-  const raw = body?.data ?? body?.statuses ?? body;
-  const pairs = Array.isArray(raw)
-    ? raw.map((r) => [String(r.status ?? r._id ?? r.name ?? ''), Number(r.count ?? r.total ?? r.value ?? 0)])
-    : Object.entries(raw ?? {}).filter(([, v]) => typeof v === 'number').map(([k, v]) => [k, v]);
+  const pairs = (body?.list ?? []).map((r) => [String(r.status ?? ''), Number(r.total ?? 0)]);
   const sum = (re) => pairs.filter(([k]) => re.test(k)).reduce((a, [, n]) => a + n, 0);
   const all = pairs.reduce((a, [, n]) => a + n, 0);
   if (!all) return {};
@@ -72,27 +101,38 @@ export function ratesFromStatuses(body) {
   return { deliveryRate: pct(sum(/deliver|livr/i)), returnRate: pct(sum(/return|retour/i)), cancelRate: pct(sum(/cancel|annul/i)) };
 }
 
-/** The platform figures for one seller, over the last 8 complete-or-current weeks. */
-export async function sellerMetrics(api, sellerId, now = new Date()) {
-  const by = { sellerId: [String(sellerId)] };
+/** The platform figures for one seller: 8 weeks of orders, rates, lifetime orders, last order, wallet. */
+export async function sellerMetrics(api, sellerId, { now = new Date(), countryId = null } = {}) {
+  const id = String(sellerId);
   const weeklyOrders = [];
   for (let w = 7; w >= 0; w--) {
     const end = new Date(now.getTime() - w * WEEK); const start = new Date(end.getTime() - WEEK);
-    weeklyOrders.push(await api.count(PATHS.orders, { ...by, createdAt: { start: start.toISOString(), end: end.toISOString() } }));
+    weeklyOrders.push(await api.count(PATHS.orders, { sellerId: [id], createdAt: { start: start.toISOString(), end: end.toISOString() } }));
   }
-  const since = new Date(now.getTime() - 8 * WEEK).toISOString();
-  const q = new URLSearchParams({ sellerId: String(sellerId), 'createdAt[start]': since, 'createdAt[end]': now.toISOString() });
+  const q = new URLSearchParams({ sellerId: id, 'createdAt[start]': new Date(now.getTime() - 8 * WEEK).toISOString(), 'createdAt[end]': now.toISOString() });
   const rates = ratesFromStatuses(await api.call('GET', PATHS.statuses, { query: q.toString() }));
-  const latest = await api.call('POST', PATHS.orders, { body: { ...by, pagination: { page: 1, perPage: 1 } } });
-  const last = itemsOf(latest)[0];
-  return { weeklyOrders, ...rates, totalOrders: totalOf(latest), lastOrderAt: dateOf(last?.createdAt) };
+  const totalOrders = await api.count(PATHS.orders, { sellerId: [id] });
+  const last = totalOrders ? await api.first(PATHS.orders, { filters: { sellerId: [id] }, sortBy: { createdAt: 'DESC' } }) : null;
+  const out = { weeklyOrders, ...rates, totalOrders, lastOrderAt: dateOf(last?.createdAt) };
+  if (api.paymentPassword && countryId) {
+    const w = await api.first(PATHS.wallets, { filters: { countryId, sellerId: [id] }, headers: { 'x-payment-password': api.paymentPassword } });
+    if (w) out.wallet = Number(w.ready ?? 0);
+  }
+  return out;
 }
 
-/** sellerIds with orders created or changed since `since` (one pass over the changed orders). */
+/** sellerIds whose orders were created or changed since `since`. */
 export async function sellersWithOrderChanges(api, since, now = new Date()) {
   const ids = new Set();
-  for await (const o of api.search(PATHS.orders, { updatedAt: { start: since.toISOString(), end: now.toISOString() } })) {
-    const id = sellerIdOf(o); if (id) ids.add(String(id));
+  for await (const o of api.search(PATHS.orders, { filters: { updatedAt: { start: since.toISOString(), end: now.toISOString() } } })) {
+    if (o.seller?.trackingId) ids.add(String(o.seller.trackingId));
   }
   return ids;
+}
+
+/** Platform account managers, keyed by lower-case email. */
+export async function managersByEmail(api) {
+  const map = new Map();
+  for await (const m of api.search(PATHS.managers, {})) if (m.email) map.set(m.email.toLowerCase(), m);
+  return map;
 }

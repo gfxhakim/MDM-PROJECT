@@ -79,7 +79,7 @@ const pill = (on, yes = 'Connected', no = 'Not connected') => `<span class="pill
 let state = { status: null, file: null, previewed: false };
 
 function syncText(sm) {
-  return `${sm.full ? 'full · ' : ''}${sm.fetched ?? 0} stores read, ${sm.updated ?? 0} sellers updated, ${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`
+  return `${sm.full ? 'full · ' : ''}${sm.fetched ?? 0} sellers read, ${sm.updated ?? 0} sellers updated, ${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`
     + `${sm.skipped?.length ? `, ${sm.skipped.length} skipped` : ''}${sm.errors?.length ? `, ${sm.errors.length} errors` : ''}`;
 }
 
@@ -98,10 +98,10 @@ function renderStatus() {
       `Last sync: ${last ? `${when(last.at)} — ${esc(last.status)}${last.summary ? `, ${syncText(last.summary)}` : ''}` : 'never'}`],
       `<div class="row"><button class="btn" id="sync" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Sync now</button>`
       + `<button class="btn" id="full" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Full resync</button></div>`)
-    + card(`Updates sent to MDM ${pill(wb.on, 'On', 'Off')}`, [esc(wb.detail),
+    + card(`Our work recorded on MDM ${pill(wb.on, 'On', 'Off')}`, [esc(wb.detail),
       `Waiting to send: ${wb.pending}`,
-      `Last send: ${wb.last ? `${when(wb.last.at)} — ${esc(wb.last.status)}${wb.last.summary?.error ? ` (${esc(wb.last.summary.error)})` : ''}` : 'never'}`],
-      `<div class="row"><button class="btn" id="push" ${wb.on ? '' : 'disabled title="Set MDM_WRITEBACK_URL to send updates"'}>Send now</button></div>`)
+      `Last send: ${wb.last ? `${when(wb.last.at)} — ${esc(wb.last.status)}${wb.last.summary?.error ? ` (${esc(wb.last.summary.error)})` : ''}${wb.last.summary?.refused?.length ? `, ${wb.last.summary.refused.length} refused by MDM` : ''}` : 'never'}`],
+      `<div class="row"><button class="btn" id="push" ${wb.on ? '' : 'disabled title="Set MDM_WRITEBACK=on to record our work on MDM"'}>Send now</button></div>`)
     + (s.whatsapp ? card(`WhatsApp Business ${pill(s.whatsapp.outbound)}`, [esc(s.whatsapp.detail),
       `Inbound webhook: ${s.whatsapp.inbound ? 'verified at <code>/api/integrations/whatsapp/webhook</code>' : 'off (set WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN)'}`]) : '')
     + (s.yeastar ? card(`Yeastar PBX ${pill(s.yeastar.events, 'Connected', 'Optional — off')}`, [esc(s.yeastar.detail),
@@ -121,7 +121,7 @@ function renderStatus() {
     const sm = r.summary || {};
     const text = r.kind === 'zoho_import'
       ? `${esc(sm.kind)} · ${esc(sm.filename || '')} · ${sm.succeeded ?? 0} imported, ${sm.skip ?? 0} skipped, ${sm.failed ?? 0} failed`
-      : r.kind === 'mdm_writeback' ? (sm.error ? esc(sm.error) : `${sm.sent ?? 0} updates sent`)
+      : r.kind === 'mdm_writeback' ? (sm.error ? esc(sm.error) : `${sm.sent ?? 0} recorded on MDM${sm.refused?.length ? `, ${sm.refused.length} refused: ${esc(sm.refused[0].reason)}` : ''}`)
       : syncText(sm);
     return `<tr><td>${when(r.startedAt)}</td><td>${esc(r.kind)}</td><td><span class="pill ${r.status === 'completed' ? 'on' : r.status === 'failed' ? 'fail' : 'off'}">${esc(r.status)}</span></td><td>${text}</td></tr>`;
   }).join('') : '<tr><td colspan="4" class="muted">No runs yet.</td></tr>';

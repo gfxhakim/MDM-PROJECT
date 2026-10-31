@@ -335,7 +335,7 @@ export async function activate(user, ticketId, { now = new Date() } = {}, db = p
     // Platform accept operation (idempotent). The MDM connector (step 9) maps the real seller id.
     let seller = await tx.seller.findUnique({ where: { contactId: contact.id } });
     if (!seller) {
-      seller = await tx.seller.create({ data: { mdmRef: `LOCAL-${contact.id}`, contactId: contact.id, market: contact.country, joinStatus: 'accepted', activatedAt: now } });
+      seller = await tx.seller.create({ data: { mdmRef: contact.mdmRef ?? `LOCAL-${contact.id}`, contactId: contact.id, market: contact.country, joinStatus: 'accepted', activatedAt: now } });
     } else if (seller.joinStatus !== 'accepted') {
       seller = await tx.seller.update({ where: { id: seller.id }, data: { joinStatus: 'accepted', activatedAt: now } });
     }

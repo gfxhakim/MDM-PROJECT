@@ -53,12 +53,14 @@ shows the state of each direction, with Sync now, Full resync and Send now.
 
 | Direction | Endpoint | Auth |
 |---|---|---|
-| MDM → app, pull (every 15 min, or "Sync now") | `POST https://api.mdm.express/api/stores/search`, `/api/v2/orders/search`, `GET /api/v2/orders/statistics/statuses` | `x-api-key` = `MDM_API_KEY` |
+| MDM → app, pull (every 15 min, or "Sync now") | `POST https://api.mdm.express/api/sellers/search`, `/api/v2/orders/search`, `GET /api/v2/orders/statistics/statuses`, wallets | `x-api-key` = `MDM_API_KEY` |
 | MDM → app, webhook (`merchant.registered`, `seller.upserted`, `order.created`, `seller.metrics`) | `POST /api/integrations/mdm/events` | `X-MDM-Key` = `MDM_WEBHOOK_SECRET` |
-| app → MDM, our updates (every 60 s, or "Send now") | `POST {MDM_WRITEBACK_URL}` | `x-api-key` = `MDM_API_KEY` |
+| app → MDM, our work (every 60 s, or "Send now"; `MDM_WRITEBACK=on`) | `PATCH /api/sellers/{id}/join/not-answer\|followup`, `POST /api/omni-channel/account-managers/sellers/{id}` | `x-api-key` = `MDM_API_KEY` |
 
-The first sync (and Full resync) reads every store: a seller with orders joins the book (same
-market, smallest book), a store with no orders yet becomes an onboarding lead. Connectors only write
+The first sync (and Full resync) reads every MDM seller: an accepted seller joins the book (its MDM
+account manager kept when they are ours, same email; otherwise same market, smallest book), a
+seller still joining becomes an onboarding lead (registrations older than 60 days and rejected
+ones are skipped). MDM has no outbound webhooks, so changes arrive with the next pull. Connectors only write
 the seller *mirror* (orders, delivery, wallet, catalogue). Health score and lifecycle stage are
 refused if sent; the nightly recompute derives them.
 
