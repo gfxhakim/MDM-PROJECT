@@ -21,6 +21,7 @@ const TAIL = (adapter) => `
 <script src="/assets/i18n.js"></script>
 <script src="/assets/i18n-ar.js"></script>
 <script src="/assets/presence.js"></script>
+<script src="/assets/toast.js"></script>
 <script src="/assets/${adapter}"></script>
 </html>`;
 

@@ -17,12 +17,11 @@ import { normalizePhone } from '../core/contacts.js';
 import { badRequest } from '../http/errors.js';
 import { logEvent } from '../services/audit.js';
 import { registerMerchant } from '../oa/service.js';
-import { handover, pickAccountManager } from '../am/handover.js';
+import { createSellerRecord } from './sellers.js';
 import { countryFromPhone } from './phone.js';
 import { applyMirror, mirrorData } from './mirror.js';
 
 const MAX_ROWS = 5000;
-const WELCOME_WINDOW_DAYS = 14; // an imported seller activated this recently with no welcome call still gets one
 
 // Zoho column names (and common variants) → our field.
 const ALIASES = {
@@ -182,29 +181,7 @@ export async function runImport(user, { kind, filename, contentBase64, dryRun = 
         await applyMirror(p.sellerId, p.mirror, db);
         results.push({ row: p.row, ok: true, sellerId: p.sellerId, updated: Object.keys(p.mirror) });
       } else {
-        const contact = await db.contact.create({ data: { phone: p.phone, name: p.name, country: p.market, contactType: 'seller', sourceUtm: 'zoho_import', ownerAgentId: p.managerId, legacy: true } });
-        await db.conversation.create({ data: { contactId: contact.id } });
-        const seller = await db.seller.create({
-          data: { mdmRef: p.mdmRef, contactId: contact.id, market: p.market, joinStatus: 'accepted', activatedAt: p.activatedAt, welcomeCallAt: p.welcomeCallAt,
-            healthStale: true, lastSyncedAt: new Date(), ...p.mirror },
-        });
-        let ownership = p.ownership;
-        const recent = !p.welcomeCallAt && Date.now() - p.activatedAt.getTime() < WELCOME_WINDOW_DAYS * 86_400_000;
-        if (!p.managerId && recent) {
-          // Activated recently and never welcomed: this is a real handover (r1 opens the welcome task).
-          const h = await handover(seller.id, { config: c }, db);
-          ownership = h.assigned ? `Assigned by the handover rule to ${h.managerName}; welcome call task opened.` : `Not assigned: ${h.reason}`;
-        } else {
-          // An established seller joining the book: same market, smallest book (AM 3.2), but no welcome task.
-          const pick = p.managerId ? { manager: ctx.managers.find((m) => m.id === p.managerId) } : await pickAccountManager(p.market, c, db);
-          if (pick.manager) {
-            await db.seller.update({ where: { id: seller.id }, data: { assignedAccountManagerId: pick.manager.id } });
-            await db.contact.update({ where: { id: contact.id }, data: { ownerAgentId: pick.manager.id } });
-            if (pick.manager.businessNumber) await db.conversation.updateMany({ where: { contactId: contact.id }, data: { businessNumber: pick.manager.businessNumber } });
-            await logEvent({ actorId: user.id, entityType: 'seller', entityId: seller.id, action: 'SELLER_ASSIGNED', after: { assignedAccountManagerId: pick.manager.id, via: 'zoho_import' }, reason: ownership }, db);
-            if (!p.managerId) ownership = `Assigned to ${pick.manager.name} (same market, smallest book).`;
-          } else ownership = `Not assigned: ${pick.reason}`;
-        }
+        const { seller, ownership } = await createSellerRecord({ ...p, source: 'zoho_import' }, { actorId: user.id, config: c, managers: ctx.managers, legacy: true }, db);
         results.push({ row: p.row, ok: true, sellerId: seller.id, ownership });
       }
     } catch (err) {

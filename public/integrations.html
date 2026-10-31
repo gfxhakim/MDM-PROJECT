@@ -52,7 +52,7 @@ code{font-size:12px;background:#F3F4F6;padding:1px 5px;border-radius:4px}
 <main>
   <div class="grid" id="status"><div class="card muted">Loading…</div></div>
 
-  <section class="card">
+  <section class="card" id="zoho" hidden>
     <h2>Zoho import</h2>
     <p>Upload a Zoho CRM export (CSV or Excel). Leads go through the normal capture and assignment rules; sellers join the book (owner kept only when they cover the market and have room). Health and lifecycle stage are never imported — they are derived.</p>
     <div class="row">
@@ -78,6 +78,11 @@ const when = (d) => d ? new Date(d).toLocaleString() : '—';
 const pill = (on, yes = 'Connected', no = 'Not connected') => `<span class="pill ${on ? 'on' : 'off'}">${on ? yes : no}</span>`;
 let state = { status: null, file: null, previewed: false };
 
+function syncText(sm) {
+  return `${sm.full ? 'full · ' : ''}${sm.fetched ?? 0} stores read, ${sm.updated ?? 0} sellers updated, ${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`
+    + `${sm.skipped?.length ? `, ${sm.skipped.length} skipped` : ''}${sm.errors?.length ? `, ${sm.errors.length} errors` : ''}`;
+}
+
 function card(title, lines, extra = '') {
   return `<div class="card"><h2>${title}</h2>${lines.map((l) => `<p>${l}</p>`).join('')}${extra}</div>`;
 }
@@ -85,26 +90,39 @@ function card(title, lines, extra = '') {
 function renderStatus() {
   const s = state.status; if (!s) return;
   const last = s.mdm.lastSync;
+  const wb = s.writeback;
+  document.getElementById('zoho').hidden = !s.optional?.zoho;
   document.getElementById('status').innerHTML =
     card(`MDM platform ${pill(s.mdm.pull)}`, [esc(s.mdm.detail),
-      `Pushed events: ${s.mdm.events ? 'accepted at <code>/api/integrations/mdm/events</code>' : 'off (set MDM_WEBHOOK_SECRET)'}`,
-      `Last sync: ${last ? `${when(last.at)} — ${esc(last.status)}${last.summary ? `, ${last.summary.updated ?? 0} of ${last.summary.fetched ?? 0} updated` : ''}` : 'never'}`],
-      `<div class="row"><button class="btn" id="sync" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_URL and MDM_API_KEY to enable the sync"'}>Sync now</button></div>`)
-    + card(`WhatsApp Business ${pill(s.whatsapp.outbound)}`, [esc(s.whatsapp.detail),
-      `Inbound webhook: ${s.whatsapp.inbound ? 'verified at <code>/api/integrations/whatsapp/webhook</code>' : 'off (set WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN)'}`])
-    + card(`Yeastar PBX ${pill(s.yeastar.events, 'Connected', 'Optional — off')}`, [esc(s.yeastar.detail),
-      `Click-to-call: ${s.yeastar.clickToCall ? 'on' : 'off (set YEASTAR_API_URL and YEASTAR_ACCESS_TOKEN)'}`]);
-  const btn = document.getElementById('sync');
-  if (btn) btn.onclick = async () => {
-    btn.disabled = true; btn.textContent = 'Syncing…';
-    try { await API.post('/api/integrations/mdm/sync'); } catch (e) { alert(e.message); }
-    await load();
+      `Webhook: ${s.mdm.events ? 'accepted at <code>/api/integrations/mdm/events</code>' : 'off (set MDM_WEBHOOK_SECRET)'}`,
+      `Last sync: ${last ? `${when(last.at)} — ${esc(last.status)}${last.summary ? `, ${syncText(last.summary)}` : ''}` : 'never'}`],
+      `<div class="row"><button class="btn" id="sync" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Sync now</button>`
+      + `<button class="btn" id="full" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Full resync</button></div>`)
+    + card(`Updates sent to MDM ${pill(wb.on, 'On', 'Off')}`, [esc(wb.detail),
+      `Waiting to send: ${wb.pending}`,
+      `Last send: ${wb.last ? `${when(wb.last.at)} — ${esc(wb.last.status)}${wb.last.summary?.error ? ` (${esc(wb.last.summary.error)})` : ''}` : 'never'}`],
+      `<div class="row"><button class="btn" id="push" ${wb.on ? '' : 'disabled title="Set MDM_WRITEBACK_URL to send updates"'}>Send now</button></div>`)
+    + (s.whatsapp ? card(`WhatsApp Business ${pill(s.whatsapp.outbound)}`, [esc(s.whatsapp.detail),
+      `Inbound webhook: ${s.whatsapp.inbound ? 'verified at <code>/api/integrations/whatsapp/webhook</code>' : 'off (set WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN)'}`]) : '')
+    + (s.yeastar ? card(`Yeastar PBX ${pill(s.yeastar.events, 'Connected', 'Optional — off')}`, [esc(s.yeastar.detail),
+      `Click-to-call: ${s.yeastar.clickToCall ? 'on' : 'off (set YEASTAR_API_URL and YEASTAR_ACCESS_TOKEN)'}`]) : '');
+  const act = (id, path, body, busy) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = busy;
+      try { await API.post(path, body); } catch (e) { alert(e.message); }
+      await load();
+    };
   };
+  act('sync', '/api/integrations/mdm/sync', {}, 'Syncing…');
+  act('full', '/api/integrations/mdm/sync', { full: true }, 'Syncing…');
+  act('push', '/api/integrations/mdm/push', {}, 'Sending…');
   document.getElementById('runs').innerHTML = s.runs.length ? s.runs.map((r) => {
     const sm = r.summary || {};
     const text = r.kind === 'zoho_import'
       ? `${esc(sm.kind)} · ${esc(sm.filename || '')} · ${sm.succeeded ?? 0} imported, ${sm.skip ?? 0} skipped, ${sm.failed ?? 0} failed`
-      : `${sm.updated ?? 0} of ${sm.fetched ?? 0} updated${sm.unknown?.length ? `, ${sm.unknown.length} unknown` : ''}${sm.errors?.length ? `, ${sm.errors.length} errors` : ''}`;
+      : r.kind === 'mdm_writeback' ? (sm.error ? esc(sm.error) : `${sm.sent ?? 0} updates sent`)
+      : syncText(sm);
     return `<tr><td>${when(r.startedAt)}</td><td>${esc(r.kind)}</td><td><span class="pill ${r.status === 'completed' ? 'on' : r.status === 'failed' ? 'fail' : 'off'}">${esc(r.status)}</span></td><td>${text}</td></tr>`;
   }).join('') : '<tr><td colspan="4" class="muted">No runs yet.</td></tr>';
 }
