@@ -48,7 +48,7 @@ function scheduleNightly() {
 scheduleNightly();
 
 // MDM platform: pull sync every MDM_SYNC_MINUTES (default 15) once MDM_API_KEY is set, and the
-// write-back of this app's updates every MDM_PUSH_SECONDS (default 60) once MDM_WRITEBACK_URL is set.
+// write-back of this app's work every MDM_PUSH_SECONDS (default 60) once MDM_WRITEBACK=on.
 if (mdmConfig().apiKey) {
   const every = (Number(process.env.MDM_SYNC_MINUTES) || 15) * 60_000;
   let busy = false;
@@ -56,13 +56,13 @@ if (mdmConfig().apiKey) {
     if (busy) return; busy = true;
     try {
       const s = await syncSellers();
-      console.log(`MDM sync: ${s.fetched} stores read, ${s.updated} sellers updated, ${s.sellersCreated} sellers and ${s.leadsCreated} leads created`);
+      console.log(`MDM sync: ${s.fetched} sellers read, ${s.updated} sellers updated, ${s.sellersCreated} sellers and ${s.leadsCreated} leads created`);
     } catch (e) { console.error('MDM sync', e.message); } finally { busy = false; }
   };
   setTimeout(sync, 10_000);
   setInterval(sync, every);
 }
-if (writebackConfig().url && writebackConfig().apiKey) {
+if (writebackConfig().on && writebackConfig().apiKey) {
   let busy = false;
   setInterval(async () => {
     if (busy) return; busy = true;

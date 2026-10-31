@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { useTestDatabase } from './helpers/db.js';
 import { startApp } from './helpers/http.js';
+import { fakeMdm, mdmSeller } from './helpers/fake-mdm.js';
 
 useTestDatabase('integrations');
 process.env.JWT_SECRET = 'test-secret';
@@ -121,50 +122,53 @@ test('MDM events: key required; registrations, orders and metrics; derived field
   assert.equal(after.healthScore, null); assert.equal(after.healthStale, true); assert.ok(after.lastSyncedAt);
 });
 
-test('MDM pull sync: refused when unset; reads stores and orders, updates known sellers, creates new ones, one audit entry', async () => {
+test('MDM pull sync: refused when unset; reads sellers, orders and wallets; updates, creates sellers and leads; one audit entry', async () => {
   const r = await app.call('POST', '/api/integrations/mdm/sync', { token: await tok('admin') });
   assert.equal(r.status, 503); assert.equal(r.body.error.code, 'not_configured');
 
   await seller('MDM-S-3', '+218915550030', U.yassine.id);
-  process.env.MDM_API_KEY = 'k';
-  const calls = [];
-  const ORDERS = { 'MDM-S-3': 40, 'MDM-S-NEW': 12, 'MDM-S-LEAD': 0 };
-  const fetchImpl = async (url, opts) => {
-    const body = opts.body ? JSON.parse(opts.body) : null;
-    calls.push({ url, key: opts.headers['x-api-key'], body });
-    let out;
-    if (url.includes('/api/stores/search')) {
-      out = body.pagination.page === 1
-        ? { data: [{ trackingId: 'st1', sellerId: 'MDM-S-3', name: 'Known', phones: ['+218915550030'] }, { trackingId: 'st2', sellerId: 'MDM-S-NEW', name: 'Old Seller', phones: ['+218915550031'], createdAt: '2025-01-10T00:00:00Z' }], pagination: { hasMore: true, nextPage: 2 } }
-        : { data: [{ trackingId: 'st3', sellerId: 'MDM-S-LEAD', name: 'New Merchant', phones: ['+218915550032'] }, { trackingId: 'st4', sellerId: 'MDM-S-FR', name: 'Paris', phones: ['+33612345678'] }], pagination: { hasMore: false, nextPage: null } };
-    } else if (url.includes('/api/v2/orders/statistics/statuses')) {
-      out = { data: [{ status: 'delivered', count: 80 }, { status: 'returned', count: 15 }, { status: 'cancelled', count: 5 }] };
-    } else {
-      const id = body.sellerId?.[0];
-      const total = body.createdAt ? (ORDERS[id] ? 1 : 0) : ORDERS[id] ?? 0;
-      out = { data: total ? [{ trackingId: 'o1', sellerId: id, createdAt: '2026-10-29T10:00:00Z' }] : [], pagination: { total, hasMore: false } };
-    }
-    return { ok: true, json: async () => out };
-  };
+  const recent = new Date(Date.now() - 3 * 86_400_000).toISOString();
+  const mdm = fakeMdm({
+    sellers: [
+      mdmSeller('MDM-S-3', '+218915550030', { joinStatus: 'accepted' }),
+      mdmSeller('MDM-S-NEW', '+218915550031', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', accountManager: { trackingId: 'AM-R' } }),
+      mdmSeller('MDM-S-LEAD', '+218915550032', { createdAt: recent }),
+      mdmSeller('MDM-S-OLD', '+218915550033', { createdAt: '2024-01-01T00:00:00Z' }),
+      mdmSeller('MDM-S-REJ', '+218915550034', { joinStatus: 'rejected', createdAt: recent }),
+      mdmSeller('MDM-S-FR', '+33612345678', { joinStatus: 'accepted', country: { id: 'c-fr', code: 'FR' } }),
+    ],
+    orders: { 'MDM-S-3': 40, 'MDM-S-NEW': 12 },
+    managers: [{ trackingId: 'AM-R', email: 'rania@t.local' }],
+    wallets: { 'MDM-S-3': 310.5 },
+  });
+  process.env.MDM_API_KEY = 'k'; process.env.MDM_PAYMENT_PASSWORD = 'pay';
   let s;
-  try {
-    s = await syncSellers({ actorId: U.admin.id, fetchImpl });
-  } finally { delete process.env.MDM_API_KEY; }
-  assert.equal(calls[0].key, 'k'); assert.match(calls[0].url, /^https:\/\/api\.mdm\.express\/api\/stores\/search/);
+  try { s = await syncSellers({ actorId: U.admin.id, fetchImpl: mdm.fetchImpl }); } finally { delete process.env.MDM_API_KEY; delete process.env.MDM_PAYMENT_PASSWORD; }
+  assert.equal(mdm.calls[0].key, 'k');
   assert.equal(s.full, true);
-  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skipped.length], [4, 1, 1, 1, 1]);
+  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skipped.length], [6, 1, 1, 1, 3]);
   const known = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-3' } });
   assert.equal(known.totalOrders, 40); assert.deepEqual(JSON.parse(known.weeklyOrders), [1, 1, 1, 1, 1, 1, 1, 1]);
-  assert.equal(known.deliveryRate, 80); assert.equal(known.returnRate, 15); assert.equal(known.cancelRate, 5);
+  assert.equal(known.deliveryRate, 80); assert.equal(known.returnRate, 15); assert.equal(known.cancelRate, 5); assert.equal(known.wallet, 310.5);
   assert.equal(known.assignedAccountManagerId, U.yassine.id);
   assert.equal(known.healthScore, null, 'health is never read from the platform');
+  assert.equal(mdm.calls.find((c) => c.path.includes('wallets')).headers['x-payment-password'], 'pay');
   const created = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-NEW' }, include: { contact: true } });
-  assert.equal(created.market, 'LY'); assert.equal(created.totalOrders, 12); assert.ok(created.assignedAccountManagerId);
+  assert.equal(created.market, 'LY'); assert.equal(created.totalOrders, 12);
+  assert.equal(created.assignedAccountManagerId, U.rania.id, "the platform's account manager is kept: same email, covers LY, has room");
+  assert.equal(created.contact.mdmRef, 'MDM-S-NEW');
   const lead = await prisma.contact.findUnique({ where: { phone: '+218915550032' } });
-  assert.equal(lead.contactType, 'merchant');
+  assert.equal(lead.contactType, 'merchant'); assert.equal(lead.mdmRef, 'MDM-S-LEAD');
   assert.ok(await prisma.ticket.findFirst({ where: { contactId: lead.id, type: 'onboarding_task' } }));
+  assert.equal(await prisma.contact.count({ where: { phone: { in: ['+218915550033', '+218915550034'] } } }), 0, 'old and rejected registrations are not opened as leads');
   assert.equal(await prisma.integrationRun.count({ where: { kind: 'mdm_sync', status: 'completed' } }), 1);
   assert.equal(await prisma.eventLog.count({ where: { action: 'mdm.sync' } }), 1);
+
+  // the next run only reads what changed: nothing updated since → no seller is re-read
+  const quiet = fakeMdm({ sellers: [mdmSeller('MDM-S-3', '+218915550030', { joinStatus: 'accepted', updatedAt: '2020-01-01T00:00:00Z' })], orders: {} });
+  process.env.MDM_API_KEY = 'k';
+  try { s = await syncSellers({ fetchImpl: quiet.fetchImpl }); } finally { delete process.env.MDM_API_KEY; }
+  assert.equal(s.full, false); assert.equal(s.fetched, 0); assert.equal(s.updated, 0);
 });
 
 test('CSV parser: quotes, escaped quotes, CRLF, semicolon exports, BOM', () => {

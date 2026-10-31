@@ -5,11 +5,12 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { useTestDatabase } from './helpers/db.js';
 import { startApp } from './helpers/http.js';
+import { fakeMdm } from './helpers/fake-mdm.js';
 
 useTestDatabase('mdm-sync');
 process.env.JWT_SECRET = 'test-secret';
 process.env.MDM_WEBHOOK_SECRET = 'mdm-key';
-for (const k of ['OPTIONAL_INTEGRATIONS', 'MDM_API_KEY', 'MDM_API_URL', 'MDM_WRITEBACK_URL', 'WHATSAPP_APP_SECRET', 'WHATSAPP_VERIFY_TOKEN', 'YEASTAR_WEBHOOK_SECRET']) delete process.env[k];
+for (const k of ['OPTIONAL_INTEGRATIONS', 'MDM_API_KEY', 'MDM_API_URL', 'MDM_WRITEBACK', 'MDM_PAYMENT_PASSWORD', 'WHATSAPP_APP_SECRET', 'WHATSAPP_VERIFY_TOKEN', 'YEASTAR_WEBHOOK_SECRET']) delete process.env[k];
 const { prisma } = await import('../src/db.js');
 const { createApp } = await import('../src/app.js');
 const cfg = await import('../src/config/service.js');
@@ -62,46 +63,63 @@ test('MDM webhook seller.upserted: an established seller joins the book, a repea
   assert.equal(await prisma.seller.count(), 1);
 });
 
-test('write-back: off until configured; sends our updates with a merchant snapshot, in order, once; a refusal is retried', async () => {
+test('write-back: off until switched on; our call outcomes become MDM join actions, in order, once; outages retried, refusals reported', async () => {
   assert.equal((await pushPending()).skipped, true);
-  const reg = (await hook({ type: 'merchant.registered', data: { phone: '+218915558800', name: 'Huda', country: 'LY' } })).results[0];
-  assert.equal(reg.ok, true);
+  process.env.MDM_API_KEY = 'k'; process.env.MDM_WRITEBACK = 'on';
+  const before = await prisma.eventLog.count();
+  if (before) await prisma.eventLog.create({ data: { entityType: 'ticket', entityId: 'x', action: 'ticket.call_logged', reason: 'no_answer' } });
+  assert.deepEqual(await pushPending({ fetchImpl: fakeMdm().fetchImpl }), { sent: 0, refused: [] }, 'switching on starts from now');
+  delete process.env.MDM_API_KEY; delete process.env.MDM_WRITEBACK;
+  const reg = (await hook({ type: 'seller.upserted', data: { mdmRef: 'MDM-L-1', phone: '+218915558800', name: 'Huda', country: 'LY', joinStatus: 'pending' } })).results[0];
+  assert.equal(reg.action, 'lead_created');
+  assert.equal((await prisma.contact.findUnique({ where: { id: reg.contactId } })).mdmRef, 'MDM-L-1');
   const ticket = await prisma.ticket.findFirst({ where: { contactId: reg.contactId, type: 'onboarding_task' } });
-  // outside the shift the lead may be held; an Admin places it, which is the change MDM should see
+  // outside the shift the lead may be held; an Admin places it (not something MDM records)
   const re = await app.call('POST', `/api/oa/tickets/${ticket.id}/reassign`, { token: await tok('admin'), body: { toUserId: U.salma.id, reason: 'Covering Libya today' } });
   assert.equal(re.status, 200, JSON.stringify(re.body));
+  const salma = await tok('salma');
+  assert.equal((await app.call('POST', `/api/oa/tickets/${ticket.id}/log-call`, { token: salma, body: { outcome: 'no_answer' } })).status, 200);
 
-  process.env.MDM_API_KEY = 'k'; process.env.MDM_WRITEBACK_URL = 'https://mdm.example/crm/updates';
+  process.env.MDM_API_KEY = 'k'; process.env.MDM_WRITEBACK = 'on';
   try {
-    assert.ok((await writebackStatus()).pending >= 1);
-    let fail = true;
-    const posts = [];
-    const fetchImpl = async (url, opts) => {
-      posts.push({ url, key: opts.headers['x-api-key'], body: JSON.parse(opts.body) });
-      return fail ? { ok: false, status: 503 } : { ok: true, status: 200 };
-    };
-    const r1 = await pushPending({ fetchImpl });
+    assert.equal((await writebackStatus()).on, true);
+    let outage = true;
+    const mdm = fakeMdm({ fail: (method, path) => (outage && path.includes('/join/') ? 503 : null) });
+    const r1 = await pushPending({ fetchImpl: mdm.fetchImpl });
     assert.equal(r1.failed, true); assert.equal(r1.sent, 0);
-    fail = false;
-    const r2 = await pushPending({ fetchImpl });
-    assert.ok(r2.sent >= 1);
-    assert.deepEqual(posts[1].body.events.map((e) => e.id), posts[0].body.events.map((e) => e.id), 'the refused batch is resent as it was');
-    const assigned = posts[1].body.events.find((e) => e.type === 'ticket.reassigned');
-    assert.equal(assigned.by.email, 'admin@t.local'); assert.equal(assigned.reason, 'Covering Libya today');
-    assert.equal(posts[1].url, 'https://mdm.example/crm/updates'); assert.equal(posts[1].key, 'k');
-    assert.equal(assigned.merchant.phone, '+218915558800');
-    assert.equal(assigned.merchant.onboarding.agent.email, 'salma@t.local');
-    assert.ok(!posts[1].body.events.some((e) => e.type.startsWith('contact.created')), 'records that came from the platform are not echoed back');
-    assert.deepEqual(await pushPending({ fetchImpl }), { sent: 0 });
+    outage = false;
+    const r2 = await pushPending({ fetchImpl: mdm.fetchImpl });
+    assert.equal(r2.sent, 1);
+    const joins = mdm.calls.filter((c) => c.path.includes('/join/'));
+    assert.deepEqual(joins.map((c) => c.path), ['/api/sellers/MDM-L-1/join/not-answer', '/api/sellers/MDM-L-1/join/not-answer'], 'the failed call is retried as it was');
+    assert.equal(joins[1].method, 'PATCH'); assert.equal(joins[1].key, 'k');
+    assert.match(joins[1].body.notes, /No answer \(attempt 1\) — salma/);
+    assert.deepEqual(await pushPending({ fetchImpl: mdm.fetchImpl }), { sent: 0, refused: [] });
     assert.equal((await writebackStatus()).pending, 0);
 
-    // a later change goes out on the next push, alone
-    const salma = await tok('salma');
-    const call = await app.call('POST', `/api/oa/tickets/${ticket.id}/log-call`, { token: salma, body: { outcome: 'no_answer' } });
-    assert.equal(call.status, 200, JSON.stringify(call.body));
-    const r3 = await pushPending({ fetchImpl });
-    assert.ok(r3.sent >= 1);
-    assert.ok(posts.at(-1).body.events.every((e) => !posts[1].body.events.some((p) => p.id === e.id)));
-    assert.ok(posts.at(-1).body.events.some((e) => e.type === 'ticket.call_logged'));
-  } finally { delete process.env.MDM_API_KEY; delete process.env.MDM_WRITEBACK_URL; }
+    // a refusal for one record (MDM's flags) is reported and does not block the next one
+    assert.equal((await app.call('POST', `/api/oa/tickets/${ticket.id}/log-call`, { token: salma, body: { outcome: 'answered_soft' } })).status, 200);
+    const strict = fakeMdm({ fail: (method, path) => (path.endsWith('/join/followup') ? 422 : null) });
+    const r3 = await pushPending({ fetchImpl: strict.fetchImpl });
+    assert.equal(r3.sent, 0); assert.equal(r3.refused.length, 1); assert.match(r3.refused[0].reason, /422/);
+    assert.equal((await writebackStatus()).pending, 0);
+    assert.ok(!strict.calls.some((c) => /accept|reject/.test(c.path)), 'Accept and Reject are never pressed for MDM staff');
+  } finally { delete process.env.MDM_API_KEY; delete process.env.MDM_WRITEBACK; }
+});
+
+test('write-back: an account manager assigned here is assigned on MDM, matched by email', async () => {
+  let r;
+  process.env.MDM_API_KEY = 'k'; process.env.MDM_WRITEBACK = 'on';
+  await pushPending({ fetchImpl: fakeMdm().fetchImpl });
+  delete process.env.MDM_API_KEY; delete process.env.MDM_WRITEBACK;
+  r = (await hook({ type: 'seller.upserted', data: { mdmRef: 'MDM-S-90', phone: '+218915559000', name: 'Shop', country: 'LY', joinStatus: 'accepted', joinStatusDate: '2025-02-01' } })).results[0];
+  process.env.MDM_API_KEY = 'k'; process.env.MDM_WRITEBACK = 'on';
+  try {
+    assert.equal(r.action, 'seller_created');
+    const mdm = fakeMdm({ managers: [{ trackingId: 'AM-7', email: 'YASSINE@t.local' }] });
+    const out = await pushPending({ fetchImpl: mdm.fetchImpl });
+    assert.equal(out.sent, 1);
+    const assign = mdm.calls.find((c) => c.path === '/api/omni-channel/account-managers/sellers/MDM-S-90');
+    assert.equal(assign.method, 'POST'); assert.deepEqual(assign.body, { accountManagerId: 'AM-7' });
+  } finally { delete process.env.MDM_API_KEY; delete process.env.MDM_WRITEBACK; }
 });

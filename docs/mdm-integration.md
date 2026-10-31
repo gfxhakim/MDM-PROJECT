@@ -1,110 +1,96 @@
 # MDM platform integration
 
-The only connector switched on for now. Three directions, each switched on by a setting in Railway's
-**Variables**.
+This is the only connector switched on for now. It is built on MDM's own OpenAPI spec
+(`https://api.mdm.express/api/docs/swagger`), using the endpoints listed below. All calls use the
+header `x-api-key: MDM_API_KEY`.
 
-| Setting | Turns on |
+| Setting (Railway → Variables) | Effect |
 |---|---|
-| `MDM_API_KEY` | Reading MDM's API every 15 minutes (`MDM_SYNC_MINUTES`) |
-| `MDM_WEBHOOK_SECRET` | Receiving events MDM pushes to us |
-| `MDM_WRITEBACK_URL` | Sending our updates to MDM every 60 seconds (`MDM_PUSH_SECONDS`) |
+| `MDM_API_KEY` | Turns on reading from MDM, every `MDM_SYNC_MINUTES` (default 15) |
+| `MDM_WRITEBACK=on` | Turns on recording our work on MDM, every `MDM_PUSH_SECONDS` (default 60) |
+| `MDM_PAYMENT_PASSWORD` | Optional. Lets the sync read seller wallet balances |
+| `MDM_LEAD_MAX_AGE_DAYS` | Pending registrations older than this are not opened as leads (default 60) |
+| `MDM_WEBHOOK_SECRET` | Optional. Accepts pushed events, if MDM ever sends them |
 
-## 1. Reading MDM (API key)
+## 1. Reading MDM
 
-Built against the public MDM API (`https://api.mdm.express`, header `x-api-key`):
+**Sellers.** `POST /api/sellers/search`, newest `updatedAt` first.
 
-- `POST /api/stores/search`: every store, paged with `pagination: { page, perPage }`. Each `sellerId`
-  is one merchant. After the first run, only stores whose `updatedAt` is after the last sync.
-- `POST /api/v2/orders/search` filtered by `sellerId` and `createdAt`: order counts per week for the
-  last 8 weeks, lifetime orders and the last order date.
-- `GET /api/v2/orders/statistics/statuses` filtered by `sellerId`: delivery, return and cancel
-  rates over the last 8 weeks.
-- After the first run, `POST /api/v2/orders/search` filtered by `updatedAt` finds the sellers whose
-  orders changed, and only those are refreshed.
+- The first run (and **Full resync**) reads every seller. Later runs stop at the first seller
+  that hasn't changed since the last sync.
+- **Accepted on MDM (`joinStatus`):**
+  - If we already have the seller, only their figures are updated.
+  - If the seller is new here, they join an account manager's book. MDM's account manager is kept
+    when they are one of our users with the same email, covers the market and has room. Otherwise
+    AM 3.2 applies: same market, smallest book, no cross-market fallback.
+  - A welcome task is opened only if the seller was accepted in the last 14 days.
+- **Still joining:** the merchant becomes an onboarding lead and goes through the normal capture
+  and assignment rules.
+  - Registrations older than `MDM_LEAD_MAX_AGE_DAYS` are skipped.
+  - Rejected merchants are skipped.
+- **Already a lead here:** the lead is linked to its MDM id and otherwise left alone, so the
+  activation gate still applies.
 
-What happens to each store:
+**Each seller's figures:**
 
-- **A seller we already have:** its figures are updated. Owner, health and stage are untouched.
-- **A seller with orders that we don't have:** it joins the book. The account manager is picked
-  from the same market, with the smallest book. A welcome task is opened only if the seller was
-  activated in the last 14 days.
-- **A store with no orders yet:** it becomes an onboarding lead, assigned by the normal rules.
-- **Already a lead here:** left alone. A lead is activated through the onboarding flow, so the
-  activation checks still apply.
+- `POST /api/v2/orders/search` filtered by `sellerId` and `createdAt` gives:
+  - the order count for each of the last 8 weeks
+  - lifetime orders
+  - the date of the last order
+- `GET /api/v2/orders/statistics/statuses` gives delivery, return and cancel rates over 8 weeks.
+- `POST /api/finance/seller-payments/wallets/search` gives the wallet's `ready` balance. It needs
+  `MDM_PAYMENT_PASSWORD`.
+- After the first run, `POST /api/v2/orders/search` filtered by `updatedAt` finds the sellers
+  whose orders changed. Their figures are refreshed.
 
-**To confirm with the MDM team.** The public docs stop before the field lists, so the field names
-used are a best reading. They are all in one file, `src/integrations/mdm-api.js`:
+Health score and lifecycle stage are never read from MDM. Our app derives them.
 
-- store `sellerId`, `phones`, `name`, `country` and `createdAt`
-- order `sellerId` and `createdAt`
-- `pagination.total` and `pagination.hasMore`
-- status names that contain *deliver*, *return* or *cancel*
+**Real time.** MDM has no outbound webhooks for sellers or orders, so changes arrive with the next
+pull: within 15 minutes, or whatever `MDM_SYNC_MINUTES` is set to. For instant updates, MDM would
+need to call our webhook. See section 3.
 
-Also not in the API yet: wallet balance, and the merchant's registration and activation status.
+## 2. Our work recorded on MDM (write-back)
 
-## 2. MDM pushes to us (webhook)
+Every state change in our app goes into the audit log. The write-back reads that log in order and
+turns the relevant entries into MDM's own actions:
 
-`POST https://<our-domain>/api/integrations/mdm/events`, with the header `X-MDM-Key: <MDM_WEBHOOK_SECRET>`.
-The body is one event or `{ "events": [ … ] }`, up to 500 per call.
+| Here | On MDM |
+|---|---|
+| Onboarding call, no answer | `PATCH /api/sellers/{id}/join/not-answer` with `notes` |
+| Call answered, walkthrough booked, status change, activation | `PATCH /api/sellers/{id}/join/followup` with `notes` |
+| Account manager assigned or changed | `POST /api/omni-channel/account-managers/sellers/{id}` with `accountManagerId` (our AM matched to MDM's by email) |
+
+**Never pressed automatically:**
+
+- **Accept.** It creates the seller's MDM login (password, services), so MDM staff press it. The
+  follow-up note says "Ready to accept on MDM".
+- **Reject.** It can't be undone.
+
+**How delivery works:**
+
+- **Start point:** write-back starts from the moment it is switched on. Earlier work isn't replayed.
+- **MDM outage** (5xx, timeout, or 401/429): the run stops, and the same entry is retried next time.
+- **MDM refuses one record** (other 4xx, for example its flags no longer allow the action): the
+  refusal is recorded on the Integrations page and the next entry goes on.
+
+## 3. What we need from the MDM developers
+
+1. An API key that can read all sellers, orders and account managers, and can call the join and
+   assign-account-manager endpoints.
+2. The `joinStatus` values: which ones mean accepted and which mean rejected. Until then, they are
+   read by meaning: *accept/approv/activ* and *reject/refus/declin*.
+3. The order `status` values. Until then: *deliver/livr*, *return/retour*, *cancel/annul*.
+4. Optional:
+   - the wallet `x-payment-password`
+   - rate limits
+   - a staging environment
+5. For instant updates: a call to our webhook `POST /api/integrations/mdm/events` (header
+   `X-MDM-Key`) when a seller registers or changes join status, and when an order is created or
+   changes status. The accepted bodies:
 
 ```json
 { "type": "merchant.registered", "data": { "phone": "+218915550020", "name": "Huda", "country": "LY", "utm": "fb_ads" } }
-{ "type": "seller.upserted",     "data": { "mdmRef": "SELLER_ID", "phone": "+218…", "name": "…", "country": "LY",
-                                           "activatedAt": "2026-01-10T00:00:00Z", "metrics": { "totalOrders": 120 } } }
-{ "type": "order.created",       "data": { "mdmRef": "SELLER_ID", "at": "2026-10-31T10:00:00Z" } }
-{ "type": "seller.metrics",      "data": { "mdmRef": "SELLER_ID", "metrics": { "deliveryRate": 82, "products": 14, "wallet": 310.5 } } }
+{ "type": "seller.upserted",     "data": { "mdmRef": "SELLER_TRACKING_ID", "phone": "+218…", "name": "…", "country": "LY", "joinStatus": "accepted" } }
+{ "type": "order.created",       "data": { "mdmRef": "SELLER_TRACKING_ID", "at": "2026-10-31T10:00:00Z" } }
+{ "type": "seller.metrics",      "data": { "mdmRef": "SELLER_TRACKING_ID", "metrics": { "deliveryRate": 82, "wallet": 310.5 } } }
 ```
-
-Accepted `metrics` fields:
-
-- `weeklyOrders` (8 numbers, oldest first) and `weeklyReturnRates`
-- `deliveryRate`, `returnRate` and `cancelRate`
-- `wallet` and `walletNegativeDays`
-- `products`, `marketsServed` and `momGrowthPct`
-- `lastOrderAt` and `totalOrders`
-- `lastLoginAt`, `lastStoreUpdateAt` and `lastProductAddedAt`
-
-`healthScore`, `healthBand` and `stage` are refused: our app derives them.
-
-Each event gets its own result: `{ "results": [ { "ok": true, … } ] }`.
-
-## 3. Our updates go back to MDM (write-back)
-
-Every state change in this app goes into the audit log. The write-back sends those changes to
-`MDM_WRITEBACK_URL` in order, oldest first, with the header `x-api-key: <MDM_API_KEY>`. A batch
-that MDM refuses (any non-2xx answer) is sent again unchanged on the next try, so nothing is lost
-or sent out of order. `id` is unique per event: use it to ignore repeats.
-
-```json
-{ "events": [ {
-  "id": "cmh…", "type": "ticket.reassigned", "at": "2026-10-31T17:40:00Z",
-  "by": { "name": "Haithem", "email": "admin@…", "role": "ADMIN" },
-  "before": { "assigneeId": null }, "after": { "assigneeId": "…" }, "reason": "Covering Libya today",
-  "merchant": {
-    "sellerId": "SELLER_ID or null for a lead", "phone": "+218915558800", "name": "Huda", "country": "LY",
-    "onboarding": { "status": "Assigned", "stage": "…", "agent": { "name": "Salma Ben Ali", "email": "…" }, "activatedAt": null },
-    "accountManager": { "name": "Yassine Trabelsi", "email": "…" },
-    "health": { "score": 72, "band": "Healthy", "computedAt": "…" },
-    "lifecycleStage": "Growing"
-  }
-} ] }
-```
-
-Event types sent:
-
-- **Onboarding:** `ticket.assigned`, `ticket.reassigned`, `ticket.taken_over`, `ticket.status_changed`,
-  `ticket.held`, `ticket.call_logged`, `ticket.walkthrough_booked`, `ticket.hub_sent`,
-  `ticket.followup_sent` and `ticket.activated`
-- **Account management:** `SELLER_ASSIGNED`, `seller.reassigned`, `seller.accepted`, `seller.churned`,
-  `seller.call_logged` and `seller.unassigned_alert`
-- **Tasks:** `am_task.opened`, `am_task.upgraded`, `am_task.rescheduled`, `am_task.escalated`,
-  `am_task.closed` and `playbook.ticked`
-
-Never sent:
-
-- MDM's own figures (orders, wallet, catalogue). They are read-only here.
-- Anything that came from MDM in the first place.
-
-**The MDM team needs to provide** an endpoint that accepts this body, or tell us their own format
-so we can map to it. The public API only edits stores and products, so it has nowhere to store
-these results yet.
