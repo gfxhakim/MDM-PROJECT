@@ -4,7 +4,7 @@
 //       Seller: trackingId, firstName, lastName, phones[], country {id, code}, joinStatus,
 //       joinStatusDate, accountManager {trackingId}, utm {utmSource}, createdAt, updatedAt
 //   • POST /api/v2/orders/search                     → { list: Order[], pagination }   filters.sellerId, createdAt, updatedAt
-//   • GET  /api/v2/orders/statistics/statuses        → { list: [{ status, total }] }   query sellerId, createdAt
+//       (each Order has a status; delivery/return/cancel rates are counted from them)
 //   • POST /api/finance/seller-payments/wallets/search → { list: [{ seller, ready, notReady, paid }] }
 //       needs filters.countryId and the x-payment-password header
 //   • POST /api/omni-channel/account-managers/search  → { list: [{ trackingId, email, … }] }
@@ -13,11 +13,11 @@
 // Every list call pages with pagination { page, perPage }. Auth: x-api-key.
 // Health and lifecycle stage are never read from the platform: they are derived here (AC-03).
 const WEEK = 7 * 86_400_000;
+const RATE_PAGES = 20; // at most 2,000 recent orders per seller are counted for the rates
 
 export const PATHS = {
   sellers: '/api/sellers/search',
   orders: '/api/v2/orders/search',
-  statuses: '/api/v2/orders/statistics/statuses',
   wallets: '/api/finance/seller-payments/wallets/search',
   managers: '/api/omni-channel/account-managers/search',
   assignManager: (sellerId) => `/api/omni-channel/account-managers/sellers/${encodeURIComponent(sellerId)}`,
@@ -91,7 +91,7 @@ export function sellerToRow(s) {
 export const isAccepted = (status) => /accept|approv|activ/i.test(status ?? '');
 export const isRejected = (status) => /reject|refus|declin/i.test(status ?? '');
 
-/** Order status totals → rates in %. */
+/** Order status totals ({ list: [{ status, total }] }) → rates in %. */
 export function ratesFromStatuses(body) {
   const pairs = (body?.list ?? []).map((r) => [String(r.status ?? ''), Number(r.total ?? 0)]);
   const sum = (re) => pairs.filter(([k]) => re.test(k)).reduce((a, [, n]) => a + n, 0);
@@ -119,9 +119,16 @@ export async function sellerMetrics(api, sellerId, { now = new Date(), countryId
     }
     out.weeklyOrders = weeklyOrders;
   });
+  // Rates are counted from the seller's own orders of the last 8 weeks. The platform's
+  // GET /api/v2/orders/statistics/statuses answers 500 ("syntax error at or near $1") when filtered
+  // by seller, so it is not used.
   await attempt('order rates', async () => {
-    const q = new URLSearchParams({ sellerId: id, 'createdAt[start]': new Date(now.getTime() - 8 * WEEK).toISOString(), 'createdAt[end]': now.toISOString() });
-    Object.assign(out, ratesFromStatuses(await api.call('GET', PATHS.statuses, { query: q.toString() })));
+    const tally = new Map();
+    const filters = { sellerId: [id], createdAt: { start: new Date(now.getTime() - 8 * WEEK).toISOString(), end: now.toISOString() } };
+    for await (const o of api.search(PATHS.orders, { filters }, 100, RATE_PAGES)) {
+      const k = String(o.status ?? ''); tally.set(k, (tally.get(k) ?? 0) + 1);
+    }
+    Object.assign(out, ratesFromStatuses({ list: [...tally].map(([status, total]) => ({ status, total })) }));
   });
   await attempt('total orders', async () => {
     out.totalOrders = await api.count(PATHS.orders, { sellerId: [id] });

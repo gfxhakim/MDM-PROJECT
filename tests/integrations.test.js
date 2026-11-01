@@ -169,12 +169,12 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   // a figure the platform refuses is left out with its reason; the seller still comes in
   const picky = fakeMdm({
     sellers: [mdmSeller('MDM-S-P', '+218915550040', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z' })],
-    orders: { 'MDM-S-P': 7 }, fail: (method, path) => (path.endsWith('/statistics/statuses') ? 403 : null),
+    orders: { 'MDM-S-P': 7 }, fail: (method, path, body) => (path === '/api/v2/orders/search' && body?.filters?.createdAt && body.pagination.perPage > 1 ? 403 : null),
   });
   process.env.MDM_API_KEY = 'k';
   try { s = await syncSellers({ full: true, fetchImpl: picky.fetchImpl }); } finally { delete process.env.MDM_API_KEY; }
   assert.equal(s.sellersCreated, 1); assert.equal(s.errorCount, 0); assert.equal(s.warningCount, 1);
-  assert.match(Object.keys(s.reasons.warnings)[0], /^order rates: MDM API GET .* responded 403/);
+  assert.match(Object.keys(s.reasons.warnings)[0], /^order rates: MDM API POST .* responded 403/);
   assert.equal((await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-P' } })).totalOrders, 7);
 
   // one sync at a time

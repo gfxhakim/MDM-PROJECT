@@ -28,11 +28,16 @@ export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}
         return reply(200, page(list, body));
       }
       const id = f.sellerId?.[0]; const n = orders[id] ?? 0;
+      if (f.createdAt && (body.pagination?.perPage ?? 100) > 1) {
+        // a seller's recent orders, read for the rates: 80 delivered, 15 returned, 5 cancelled
+        const mix = n ? [['delivered', 80], ['returned', 15], ['cancelled', 5]].flatMap(([st, k]) => Array.from({ length: k }, (_, i) => ({ trackingId: `o-${st}-${i}`, status: st, seller: { trackingId: id } }))) : [];
+        return reply(200, page(mix, body));
+      }
       const total = f.createdAt ? (n ? 1 : 0) : n;
       return reply(200, { list: total ? [{ trackingId: 'o1', seller: { trackingId: id }, createdAt: '2026-10-29T10:00:00Z' }] : [], pagination: { page: 1, perPage: 1, total, hasMore: false } });
     }
     if (u.pathname === '/api/v2/orders/statistics/statuses') {
-      return reply(200, { list: [{ status: 'delivered', total: 80 }, { status: 'returned', total: 15 }, { status: 'cancelled', total: 5 }], pagination: {} });
+      return reply(500, { error: { code: 'x', message: 'syntax error at or near "$1"' } }); // as the live platform answers
     }
     if (u.pathname === '/api/finance/seller-payments/wallets/search') {
       const id = body.filters.sellerId?.[0];
