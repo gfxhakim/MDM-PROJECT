@@ -18,7 +18,7 @@ import { applyMirror, mirrorData } from './mirror.js';
 import { getLiveConfig } from '../config/service.js';
 import { createSellerRecord } from './sellers.js';
 import { countryFromPhone } from './phone.js';
-import { PATHS, client, isAccepted, isRejected, managersByEmail, sellerMetrics, sellersWithOrderChanges, sellerToRow } from './mdm-api.js';
+import { PATHS, client, isAccepted, isRejected, managersByEmail, marketCode, sellerMetrics, sellersWithOrderChanges, sellerToRow } from './mdm-api.js';
 
 export const mdmConfig = () => ({
   url: (process.env.MDM_API_URL || 'https://api.mdm.express').replace(/\/$/, ''),
@@ -85,8 +85,11 @@ export async function upsertFromMdm(row, ctx, db = prisma) {
   }
   let phone;
   try { phone = normalizePhone(row.phone); } catch { return { ok: false, action: 'skipped', ref, reason: 'No valid phone number.' }; }
-  const market = String(row.country ?? row.market ?? '').toUpperCase() || countryFromPhone(phone);
-  if (!MARKETS.includes(market)) return { ok: false, action: 'skipped', ref, reason: `Market ${market || 'unknown'} is not Libya, Iraq or Lebanon.` };
+  const market = marketCode(row.country ?? row.market) || countryFromPhone(phone);
+  if (!MARKETS.includes(market)) {
+    const others = (row.countries ?? []).filter((c) => c && c !== market);
+    return { ok: false, action: 'skipped', ref, reason: `Market ${market || 'unknown'} is not Libya, Iraq or Lebanon${others.length ? ` (the platform also lists ${others.join(', ')} for this seller)` : ''}.` };
+  }
   if (isRejected(row.joinStatus)) return { ok: false, action: 'skipped', ref, reason: `Rejected on the platform (${row.joinStatus}).` };
   const accepted = isAccepted(row.joinStatus) || !!row.activatedAt;
   const activatedAt = dateOr(row.activatedAt) ?? (accepted ? (dateOr(row.joinStatusDate) ?? dateOr(row.createdAt) ?? new Date()) : null);
@@ -230,7 +233,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
       const seller = await sellerFor({ mdmRef: ref }, db);
       if (!seller) continue; // not one of ours yet: it arrives with its seller record
       try {
-        const countryId = c.paymentPassword ? (await api.call('GET', `/api/sellers/${encodeURIComponent(ref)}`))?.country?.id : null;
+        const countryId = c.paymentPassword ? sellerToRow((await api.call('GET', `/api/sellers/${encodeURIComponent(ref)}`)) ?? {}).countryId : null;
         const m = await sellerMetrics(api, ref, { now, countryId });
         warn(ref, m.warnings);
         const { data, errors } = mirrorData(m.metrics);

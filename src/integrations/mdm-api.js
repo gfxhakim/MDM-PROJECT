@@ -1,8 +1,9 @@
 // The client's MDM platform API (https://api.mdm.express; OpenAPI served at /api/docs/swagger).
 // Only the endpoints this app needs, with the request and response shapes from that spec:
 //   • POST /api/sellers/search                      → { list: Seller[], pagination }
-//       Seller: trackingId, firstName, lastName, phones[], country {id, code}, joinStatus,
-//       joinStatusDate, accountManager {trackingId}, utm {utmSource}, createdAt, updatedAt
+//       Seller: trackingId, firstName, lastName, phones[], country {id, code}, countries [{id, code}],
+//       joinStatus, joinStatusDate, accountManager {trackingId}, utm {utmSource}, createdAt, updatedAt
+//       (country codes are ISO alpha-3 on the platform: LBY, IRQ, LBN, DZA, MAR …)
 //   • POST /api/v2/orders/search                     → { list: Order[], pagination }   filters.sellerId, createdAt, updatedAt
 //   • POST /api/analytics/orders/sellers-status/search → { list: [{ seller {trackingId}, countryId, delivered, returned,
 //       cancelled, totalLeads, totalParcels, totalParcelsWithoutLead, … }] }   filters.sellerId, date
@@ -73,14 +74,30 @@ export function client({ url, apiKey, paymentPassword = null, fetchImpl = fetch 
   };
 }
 
-/** A platform seller → the row upsertFromMdm expects. */
+// The platform writes ISO alpha-3 country codes (LBY, IRQ, LBN, DZA, MAR …); the specs and the
+// prototypes name the three markets LY, IQ and LB.
+const ALPHA3 = { LBY: 'LY', IRQ: 'IQ', LBN: 'LB' };
+export const marketCode = (code) => { const k = String(code ?? '').trim().toUpperCase(); return ALPHA3[k] ?? k; };
+const MARKET_CODES = ['LY', 'IQ', 'LB'];
+
+/**
+ * A platform seller → the row upsertFromMdm expects.
+ * A seller lives in `country` and sells in `countries` (the platform's servicesByCountry). The
+ * module's market is where MDM delivers for the seller — Libya, Iraq or Lebanon (AM spec Part 6):
+ * the home country when it is one of them, otherwise the first of the seller's countries that is.
+ * `countryId` is that market's id (wallets and services are per country on the platform).
+ */
 export function sellerToRow(s) {
+  const home = s.country?.code ? { id: s.country.id ?? null, code: marketCode(s.country.code) } : null;
+  const selling = (s.countries ?? []).filter((c) => c?.code).map((c) => ({ id: c.id ?? null, code: marketCode(c.code) }));
+  const market = [home, ...selling].find((c) => c && MARKET_CODES.includes(c.code)) ?? home ?? selling[0] ?? null;
   return {
     mdmRef: s.trackingId,
     phone: s.phones?.[0] ?? null,
     name: [s.firstName, s.lastName].filter(Boolean).join(' ').trim() || null,
-    country: s.country?.code ?? null,
-    countryId: s.country?.id ?? null,
+    country: market?.code ?? null,
+    countryId: market?.id ?? null,
+    countries: [...new Set([home, ...selling].filter(Boolean).map((c) => c.code))],
     joinStatus: s.joinStatus ?? null,
     joinStatusDate: dateOf(s.joinStatusDate),
     createdAt: dateOf(s.createdAt),

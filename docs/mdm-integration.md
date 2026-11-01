@@ -18,6 +18,12 @@ header `x-api-key: MDM_API_KEY`.
 
 - The first run (and **Full resync**) reads every seller. Later runs stop at the first seller
   that hasn't changed since the last sync.
+- **Market.** MDM writes ISO alpha-3 country codes (`LBY`, `IRQ`, `LBN`, `DZA`, `MAR` …); the app
+  names its markets `LY`, `IQ`, `LB`. A seller lives in `country` and sells in `countries`
+  (MDM's `servicesByCountry`). The seller's market is where MDM delivers for them: the home country
+  when it is Libya, Iraq or Lebanon, otherwise the first of their `countries` that is. A seller with
+  none of the three is skipped, and the "Why" panel lists the countries MDM has for them. Wallets
+  are read in the seller's market.
 - **Accepted on MDM (`joinStatus`):**
   - If we already have the seller, only their figures are updated.
   - If the seller is new here, they join an account manager's book. MDM's account manager is kept

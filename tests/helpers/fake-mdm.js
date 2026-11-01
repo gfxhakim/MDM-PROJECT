@@ -56,8 +56,10 @@ export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}
   return { fetchImpl, calls };
 }
 
+// Country codes as the live platform writes them: ISO alpha-3 (LBY, IRQ, LBN, DZA …).
 export const mdmSeller = (id, phone, extra = {}) => ({
   trackingId: id, firstName: extra.firstName ?? id, lastName: '', phones: [phone],
-  country: { id: 'c-ly', name: 'Libya', code: 'LY' }, joinStatus: 'pending', joinStatusDate: '2026-10-30T00:00:00Z',
+  country: { id: 'c-ly', name: 'Libya', code: 'LBY' }, countries: [{ id: 'c-ly', name: 'Libya', code: 'LBY' }],
+  joinStatus: 'pending', joinStatusDate: '2026-10-30T00:00:00Z',
   createdAt: '2026-10-30T00:00:00Z', updatedAt: '2026-10-30T00:00:00Z', utm: { utmSource: 'fb_ads' }, accountManager: null, ...extra,
 });
