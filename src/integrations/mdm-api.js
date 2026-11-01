@@ -101,24 +101,40 @@ export function ratesFromStatuses(body) {
   return { deliveryRate: pct(sum(/deliver|livr/i)), returnRate: pct(sum(/return|retour/i)), cancelRate: pct(sum(/cancel|annul/i)) };
 }
 
-/** The platform figures for one seller: 8 weeks of orders, rates, lifetime orders, last order, wallet. */
+/**
+ * The platform figures for one seller: 8 weeks of orders, rates, lifetime orders, last order, wallet.
+ * Best effort: each figure is fetched on its own, so one refused call (a permission the key lacks,
+ * a filter the platform rejects) leaves that figure out instead of losing the seller. The reasons
+ * come back in `warnings`.
+ */
 export async function sellerMetrics(api, sellerId, { now = new Date(), countryId = null } = {}) {
   const id = String(sellerId);
-  const weeklyOrders = [];
-  for (let w = 7; w >= 0; w--) {
-    const end = new Date(now.getTime() - w * WEEK); const start = new Date(end.getTime() - WEEK);
-    weeklyOrders.push(await api.count(PATHS.orders, { sellerId: [id], createdAt: { start: start.toISOString(), end: end.toISOString() } }));
-  }
-  const q = new URLSearchParams({ sellerId: id, 'createdAt[start]': new Date(now.getTime() - 8 * WEEK).toISOString(), 'createdAt[end]': now.toISOString() });
-  const rates = ratesFromStatuses(await api.call('GET', PATHS.statuses, { query: q.toString() }));
-  const totalOrders = await api.count(PATHS.orders, { sellerId: [id] });
-  const last = totalOrders ? await api.first(PATHS.orders, { filters: { sellerId: [id] }, sortBy: { createdAt: 'DESC' } }) : null;
-  const out = { weeklyOrders, ...rates, totalOrders, lastOrderAt: dateOf(last?.createdAt) };
+  const out = {}; const warnings = [];
+  const attempt = async (what, fn) => { try { await fn(); } catch (err) { warnings.push(`${what}: ${err.message}`); } };
+  await attempt('weekly orders', async () => {
+    const weeklyOrders = [];
+    for (let w = 7; w >= 0; w--) {
+      const end = new Date(now.getTime() - w * WEEK); const start = new Date(end.getTime() - WEEK);
+      weeklyOrders.push(await api.count(PATHS.orders, { sellerId: [id], createdAt: { start: start.toISOString(), end: end.toISOString() } }));
+    }
+    out.weeklyOrders = weeklyOrders;
+  });
+  await attempt('order rates', async () => {
+    const q = new URLSearchParams({ sellerId: id, 'createdAt[start]': new Date(now.getTime() - 8 * WEEK).toISOString(), 'createdAt[end]': now.toISOString() });
+    Object.assign(out, ratesFromStatuses(await api.call('GET', PATHS.statuses, { query: q.toString() })));
+  });
+  await attempt('total orders', async () => {
+    out.totalOrders = await api.count(PATHS.orders, { sellerId: [id] });
+    const last = out.totalOrders ? await api.first(PATHS.orders, { filters: { sellerId: [id] }, sortBy: { createdAt: 'DESC' } }) : null;
+    out.lastOrderAt = dateOf(last?.createdAt);
+  });
   if (api.paymentPassword && countryId) {
-    const w = await api.first(PATHS.wallets, { filters: { countryId, sellerId: [id] }, headers: { 'x-payment-password': api.paymentPassword } });
-    if (w) out.wallet = Number(w.ready ?? 0);
+    await attempt('wallet', async () => {
+      const w = await api.first(PATHS.wallets, { filters: { countryId, sellerId: [id] }, headers: { 'x-payment-password': api.paymentPassword } });
+      if (w) out.wallet = Number(w.ready ?? 0);
+    });
   }
-  return out;
+  return { metrics: out, warnings };
 }
 
 /** sellerIds whose orders were created or changed since `since`. */

@@ -3,7 +3,7 @@ import { expireElevations } from './auth/elevation.js';
 import { getLiveConfig } from './config/service.js';
 import { runOnboardingSweep } from './oa/rules.js';
 import { runAmSweep } from './am/rules.js';
-import { mdmConfig, syncSellers } from './integrations/mdm.js';
+import { closeInterruptedRuns, mdmConfig, syncSellers } from './integrations/mdm.js';
 import { pushPending, writebackConfig } from './integrations/mdm-writeback.js';
 
 if (!process.env.JWT_SECRET) {
@@ -49,6 +49,7 @@ scheduleNightly();
 
 // MDM platform: pull sync every MDM_SYNC_MINUTES (default 15) once MDM_API_KEY is set, and the
 // write-back of this app's work every MDM_PUSH_SECONDS (default 60) once MDM_WRITEBACK=on.
+closeInterruptedRuns().catch((e) => console.error('closing interrupted runs', e.message));
 if (mdmConfig().apiKey) {
   const every = (Number(process.env.MDM_SYNC_MINUTES) || 15) * 60_000;
   let busy = false;
@@ -56,8 +57,8 @@ if (mdmConfig().apiKey) {
     if (busy) return; busy = true;
     try {
       const s = await syncSellers();
-      console.log(`MDM sync: ${s.fetched} sellers read, ${s.updated} sellers updated, ${s.sellersCreated} sellers and ${s.leadsCreated} leads created`);
-    } catch (e) { console.error('MDM sync', e.message); } finally { busy = false; }
+      console.log(`MDM sync: ${s.fetched} sellers read, ${s.updated} updated, ${s.sellersCreated} sellers and ${s.leadsCreated} leads created, ${s.skippedCount} skipped, ${s.errorCount} errors`);
+    } catch (e) { if (e.code !== 'sync_running') console.error('MDM sync', e.message); } finally { busy = false; }
   };
   setTimeout(sync, 10_000);
   setInterval(sync, every);
