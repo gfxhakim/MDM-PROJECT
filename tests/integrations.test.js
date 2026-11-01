@@ -18,6 +18,7 @@ const { createApp } = await import('../src/app.js');
 const cfg = await import('../src/config/service.js');
 const { hashPassword } = await import('../src/auth/service.js');
 const { syncSellers } = await import('../src/integrations/mdm.js');
+const { ratesFromReporting } = await import('../src/integrations/mdm-api.js');
 const { parseCsv } = await import('../src/integrations/importer.js');
 
 const PASSWORD = 'pw-123456';
@@ -138,6 +139,7 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
       mdmSeller('MDM-S-FR', '+33612345678', { joinStatus: 'accepted', country: { id: 'c-fr', code: 'FR' } }),
     ],
     orders: { 'MDM-S-3': 40, 'MDM-S-NEW': 12 },
+    reporting: { 'MDM-S-NEW': [{ countryId: 'c-ly', delivered: 8, returned: 1, cancelled: 1, totalLeads: 12, totalParcels: 10 }, { countryId: 'c-iq', delivered: 3, returned: 0, cancelled: 0, totalLeads: 4, totalParcels: 3 }] },
     managers: [{ trackingId: 'AM-R', email: 'rania@t.local' }],
     wallets: { 'MDM-S-3': 310.5 },
   });
@@ -152,11 +154,19 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   const known = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-3' } });
   assert.equal(known.totalOrders, 40); assert.deepEqual(JSON.parse(known.weeklyOrders), [1, 1, 1, 1, 1, 1, 1, 1]);
   assert.equal(known.deliveryRate, 80); assert.equal(known.returnRate, 15); assert.equal(known.cancelRate, 5); assert.equal(known.wallet, 310.5);
+  assert.equal(known.marketsServed, 1);
+  const inputs = JSON.parse(known.mirrorInputs).rates;
+  assert.deepEqual([inputs.delivered, inputs.returned, inputs.cancelled, inputs.orders, inputs.totalParcels, inputs.markets], [80, 15, 5, 100, 95, ['c-ly']], 'the platform counts behind the rates are kept');
+  assert.ok(inputs.window.start < inputs.window.end && inputs.readAt);
+  const reporting = mdm.calls.filter((c) => c.path === '/api/analytics/orders/sellers-status/search');
+  assert.ok(reporting.length >= 2 && reporting.every((c) => c.method === 'POST' && c.body.filters.sellerId.length === 1 && c.body.filters.date.start), "rates come from MDM's reporting rows, filtered by seller and window");
+  assert.ok(!mdm.calls.some((c) => c.path.includes('/statistics/')), 'the statistics service that answers 500 is never called');
   assert.equal(known.assignedAccountManagerId, U.yassine.id);
   assert.equal(known.healthScore, null, 'health is never read from the platform');
   assert.equal(mdm.calls.find((c) => c.path.includes('wallets')).headers['x-payment-password'], 'pay');
   const created = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-NEW' }, include: { contact: true } });
   assert.equal(created.market, 'LY'); assert.equal(created.totalOrders, 12);
+  assert.deepEqual([created.deliveryRate, created.returnRate, created.cancelRate, created.marketsServed], [68.8, 6.3, 6.3, 2], 'two market rows: counts summed over 16 orders, two markets served');
   assert.equal(created.assignedAccountManagerId, U.rania.id, "the platform's account manager is kept: same email, covers LY, has room");
   assert.equal(created.contact.mdmRef, 'MDM-S-NEW');
   const lead = await prisma.contact.findUnique({ where: { phone: '+218915550032' } });
@@ -169,13 +179,27 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   // a figure the platform refuses is left out with its reason; the seller still comes in
   const picky = fakeMdm({
     sellers: [mdmSeller('MDM-S-P', '+218915550040', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z' })],
-    orders: { 'MDM-S-P': 7 }, fail: (method, path) => (path.endsWith('/statistics/statuses') ? 403 : null),
+    orders: { 'MDM-S-P': 7 }, fail: (method, path) => (path === '/api/analytics/orders/sellers-status/search' ? 403 : null),
   });
   process.env.MDM_API_KEY = 'k';
   try { s = await syncSellers({ full: true, fetchImpl: picky.fetchImpl }); } finally { delete process.env.MDM_API_KEY; }
   assert.equal(s.sellersCreated, 1); assert.equal(s.errorCount, 0); assert.equal(s.warningCount, 1);
-  assert.match(Object.keys(s.reasons.warnings)[0], /^order rates: MDM API GET .* responded 403/);
-  assert.equal((await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-P' } })).totalOrders, 7);
+  assert.match(Object.keys(s.reasons.warnings)[0], /^delivery, return and cancel rates: MDM API POST .* responded 403/);
+  const p = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-P' } });
+  assert.equal(p.totalOrders, 7); assert.equal(p.deliveryRate, 0); assert.equal(p.mirrorInputs, '{}');
+
+  // reporting figures that cannot be right, or missing for a seller with orders, are reported — never written
+  const odd = fakeMdm({
+    sellers: [mdmSeller('MDM-S-Q', '+218915550041', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z' }), mdmSeller('MDM-S-R', '+218915550042', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z' })],
+    orders: { 'MDM-S-Q': 9, 'MDM-S-R': 9 }, reporting: { 'MDM-S-Q': [{ delivered: 120, returned: 0, cancelled: 0, totalLeads: 100, totalParcels: 100 }], 'MDM-S-R': [] },
+  });
+  process.env.MDM_API_KEY = 'k';
+  try { s = await syncSellers({ full: true, fetchImpl: odd.fetchImpl }); } finally { delete process.env.MDM_API_KEY; }
+  assert.equal(s.sellersCreated, 2); assert.equal(s.warningCount, 2);
+  assert.deepEqual(Object.values(s.reasons.warnings).map((w) => w.examples), [['MDM-S-Q'], ['MDM-S-R']]);
+  assert.match(Object.keys(s.reasons.warnings)[0], /counts do not add up \(120 delivered, 0 returned, 0 cancelled out of 100 orders\)/);
+  assert.match(Object.keys(s.reasons.warnings)[1], /MDM reporting has no figures for this seller although it has orders in the last 8 weeks/);
+  for (const ref of ['MDM-S-Q', 'MDM-S-R']) assert.equal((await prisma.seller.findUnique({ where: { mdmRef: ref } })).deliveryRate, 0);
 
   // one sync at a time
   process.env.MDM_API_KEY = 'k';
@@ -191,6 +215,23 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   process.env.MDM_API_KEY = 'k';
   try { s = await syncSellers({ fetchImpl: quiet.fetchImpl }); } finally { delete process.env.MDM_API_KEY; }
   assert.equal(s.full, false); assert.equal(s.fetched, 0); assert.equal(s.updated, 0);
+});
+
+test("MDM reporting rows → rates: counts summed over the seller's markets, no orders → no rates, impossible counts → a problem", () => {
+  const two = ratesFromReporting([
+    { countryId: 'c-ly', delivered: 30, returned: 10, cancelled: 20, totalLeads: 90, totalParcels: 50, totalParcelsWithoutLead: 10 },
+    { countryId: 'c-iq', delivered: 5, returned: 0, cancelled: 0, totalLeads: 0, totalParcels: 5, totalParcelsWithoutLead: 0 },
+    { countryId: 'c-lb', delivered: 0, returned: 0, cancelled: 0, totalLeads: 0, totalParcels: 0, totalParcelsWithoutLead: 0 },
+  ], { window: { start: 'a', end: 'b' } });
+  assert.deepEqual(two.rates, { deliveryRate: 35, returnRate: 10, cancelRate: 20 });
+  assert.equal(two.marketsServed, 2, 'a market with no orders and no parcels is not served');
+  assert.deepEqual([two.inputs.orders, two.inputs.totalParcels, two.inputs.markets, two.inputs.window], [100, 55, ['c-ly', 'c-iq'], { start: 'a', end: 'b' }]);
+  const none = ratesFromReporting([]);
+  assert.deepEqual([none.rates, none.marketsServed, none.inputs.orders, none.problem], [null, 1, 0, undefined]);
+  const nulls = ratesFromReporting([{ countryId: 'c-ly', delivered: null, returned: 'x', cancelled: 2, totalLeads: 10, totalParcels: 4 }]);
+  assert.deepEqual(nulls.rates, { deliveryRate: 0, returnRate: 0, cancelRate: 20 }, 'a missing count reads as 0, never NaN');
+  const over = ratesFromReporting([{ countryId: 'c-ly', delivered: 11, returned: 0, cancelled: 0, totalLeads: 10, totalParcels: 10 }]);
+  assert.equal(over.rates, null); assert.match(over.problem, /do not add up/);
 });
 
 test('CSV parser: quotes, escaped quotes, CRLF, semicolon exports, BOM', () => {

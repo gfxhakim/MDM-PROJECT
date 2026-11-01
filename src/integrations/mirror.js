@@ -7,6 +7,7 @@ export const MIRROR_FIELDS = {
   weeklyOrders: 'json8', weeklyReturnRates: 'json8', deliveryRate: 'pct', returnRate: 'pct', cancelRate: 'pct',
   wallet: 'number', walletNegativeDays: 'int', products: 'int', marketsServed: 'int', momGrowthPct: 'number',
   lastOrderAt: 'date', totalOrders: 'int', lastLoginAt: 'date', lastStoreUpdateAt: 'date', lastProductAddedAt: 'date',
+  mirrorInputs: 'json', // the platform counts behind the rates (AM 4.6: inputs kept with the result)
 };
 export const DERIVED_FIELDS = ['healthScore', 'healthBand', 'healthComponents', 'stage', 'lifecycleStage', 'health'];
 
@@ -18,7 +19,10 @@ export function mirrorData(input) {
     const type = MIRROR_FIELDS[k];
     if (!type) { ignored.push(k); continue; }
     if (v === null || v === undefined || v === '') { if (type === 'date') data[k] = null; continue; }
-    if (type === 'json8') {
+    if (type === 'json') {
+      if (typeof v === 'object') data[k] = JSON.stringify(v);
+      else { try { JSON.parse(v); data[k] = String(v); } catch { errors.push(`${k} is not valid JSON.`); } }
+    } else if (type === 'json8') {
       const arr = Array.isArray(v) ? v : String(v).split(/[;,|]/).map((x) => x.trim()).filter(Boolean);
       const nums = arr.map(Number);
       if (nums.some((x) => !Number.isFinite(x))) { errors.push(`${k} must be a list of numbers.`); continue; }

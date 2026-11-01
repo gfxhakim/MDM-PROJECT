@@ -37,7 +37,24 @@ header `x-api-key: MDM_API_KEY`.
   - the order count for each of the last 8 weeks
   - lifetime orders
   - the date of the last order
-- `GET /api/v2/orders/statistics/statuses` gives delivery, return and cancel rates over 8 weeks.
+- `POST /api/analytics/orders/sellers-status/search` filtered by `sellerId` and `date` (the last
+  8 weeks) is MDM's own reporting row for the seller, one per market: `delivered`, `returned`,
+  `cancelled`, `totalLeads`, `totalParcels`, `totalParcelsWithoutLead`. The AM spec (1.2) and the
+  OA spec (11.4) say MDM computes delivery and return rates and this app only reads them, so the
+  rates come from these counts and are never counted from raw orders here:
+  - delivery rate = `delivered` ÷ orders, return rate = `returned` ÷ orders, cancel rate =
+    `cancelled` ÷ orders, where orders = `totalLeads` + `totalParcelsWithoutLead` (every order of
+    the window). **The spec does not state the denominator.** The Appendix D targets (35 %
+    delivery, 24 % returns, 33 % cancelled) only add up on this basis; MDM's own profit calculator
+    defines delivery rate per shipped parcel. One question to MDM settles it. The counts are stored
+    on the seller (`mirrorInputs`), so the divisor can change without a resync.
+  - markets served = the markets (rows) where MDM reports orders or parcels for the seller in the
+    window, at least 1.
+  - No orders in the window → the rates are left as they are ("no parcels yet"). Counts that cannot
+    be right (a rate above 100 %), or no reporting row for a seller that has orders, are reported on
+    the Integrations page and nothing is written.
+  - `GET /api/v2/orders/statistics/statuses` is **not** used: the live platform answers 500
+    (`syntax error at or near "$1"`) when it is filtered by seller.
 - `POST /api/finance/seller-payments/wallets/search` gives the wallet's `ready` balance. It needs
   `MDM_PAYMENT_PASSWORD`.
 - After the first run, `POST /api/v2/orders/search` filtered by `updatedAt` finds the sellers

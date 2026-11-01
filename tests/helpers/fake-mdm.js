@@ -1,6 +1,8 @@
 // A stand-in for the MDM platform API (shapes from its OpenAPI spec), for the connector tests.
-// sellers: platform seller records; orders: { sellerId: count }; managers: platform AMs.
-export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}, fail = null } = {}) {
+// sellers: platform seller records; orders: { sellerId: count }; managers: platform AMs;
+// reporting: { sellerId: [row per market] } overrides MDM's reporting rows (default: 80 delivered,
+// 15 returned, 5 cancelled out of 100 orders in one market, for every seller that has orders).
+export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}, reporting = {}, fail = null } = {}) {
   const calls = [];
   const page = (list, body) => {
     const { page: p = 1, perPage = 100 } = body?.pagination ?? {};
@@ -28,11 +30,19 @@ export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}
         return reply(200, page(list, body));
       }
       const id = f.sellerId?.[0]; const n = orders[id] ?? 0;
-      const total = f.createdAt ? (n ? 1 : 0) : n;
+      const total = f.createdAt ? (n ? 1 : 0) : n; // one order in each weekly window
       return reply(200, { list: total ? [{ trackingId: 'o1', seller: { trackingId: id }, createdAt: '2026-10-29T10:00:00Z' }] : [], pagination: { page: 1, perPage: 1, total, hasMore: false } });
     }
+    if (u.pathname === '/api/analytics/orders/sellers-status/search') {
+      // MDM's reporting row per seller and market (GetOrdersSellersStatusAnalyticsResponseItem)
+      const ids = body.filters?.sellerId ?? Object.keys(orders);
+      const rows = ids.flatMap((id) => (reporting[id] ?? (orders[id] ? [{ delivered: 80, returned: 15, cancelled: 5, totalLeads: 100, totalParcels: 95 }] : []))
+        .map((r) => ({ seller: { trackingId: id, firstName: id, lastName: '', pictureId: '' }, countryId: 'c-ly', pending: 0, callLater: 0, notAnswer: 0, confirmed: 0, outOfStock: 0,
+          cancelledAfterOutOfStock: 0, cancelledWithoutOutOfStock: r.cancelled ?? 0, preparing: 0, received: 0, packaged: 0, lost: 0, refunded: 0, dispatched: 0, totalParcelsWithoutLead: 0, ...r })));
+      return reply(200, page(rows, body));
+    }
     if (u.pathname === '/api/v2/orders/statistics/statuses') {
-      return reply(200, { list: [{ status: 'delivered', total: 80 }, { status: 'returned', total: 15 }, { status: 'cancelled', total: 5 }], pagination: {} });
+      return reply(500, { error: { code: 'x', message: 'syntax error at or near "$1"' } }); // as the live platform answers
     }
     if (u.pathname === '/api/finance/seller-payments/wallets/search') {
       const id = body.filters.sellerId?.[0];

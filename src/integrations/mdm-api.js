@@ -4,7 +4,10 @@
 //       Seller: trackingId, firstName, lastName, phones[], country {id, code}, joinStatus,
 //       joinStatusDate, accountManager {trackingId}, utm {utmSource}, createdAt, updatedAt
 //   • POST /api/v2/orders/search                     → { list: Order[], pagination }   filters.sellerId, createdAt, updatedAt
-//   • GET  /api/v2/orders/statistics/statuses        → { list: [{ status, total }] }   query sellerId, createdAt
+//   • POST /api/analytics/orders/sellers-status/search → { list: [{ seller {trackingId}, countryId, delivered, returned,
+//       cancelled, totalLeads, totalParcels, totalParcelsWithoutLead, … }] }   filters.sellerId, date
+//       MDM's own reporting row per seller and market. The delivery, return and cancel rates are read from
+//       it (AM spec 1.2, OA spec 11.4: the platform computes these figures; this module only reads them).
 //   • POST /api/finance/seller-payments/wallets/search → { list: [{ seller, ready, notReady, paid }] }
 //       needs filters.countryId and the x-payment-password header
 //   • POST /api/omni-channel/account-managers/search  → { list: [{ trackingId, email, … }] }
@@ -13,11 +16,12 @@
 // Every list call pages with pagination { page, perPage }. Auth: x-api-key.
 // Health and lifecycle stage are never read from the platform: they are derived here (AC-03).
 const WEEK = 7 * 86_400_000;
+const RATE_WINDOW_WEEKS = 8; // the AM prototype's "The numbers · last 8 weeks" card: delivery, returns, cancelled
 
 export const PATHS = {
   sellers: '/api/sellers/search',
   orders: '/api/v2/orders/search',
-  statuses: '/api/v2/orders/statistics/statuses',
+  sellerReporting: '/api/analytics/orders/sellers-status/search',
   wallets: '/api/finance/seller-payments/wallets/search',
   managers: '/api/omni-channel/account-managers/search',
   assignManager: (sellerId) => `/api/omni-channel/account-managers/sellers/${encodeURIComponent(sellerId)}`,
@@ -91,18 +95,37 @@ export function sellerToRow(s) {
 export const isAccepted = (status) => /accept|approv|activ/i.test(status ?? '');
 export const isRejected = (status) => /reject|refus|declin/i.test(status ?? '');
 
-/** Order status totals → rates in %. */
-export function ratesFromStatuses(body) {
-  const pairs = (body?.list ?? []).map((r) => [String(r.status ?? ''), Number(r.total ?? 0)]);
-  const sum = (re) => pairs.filter(([k]) => re.test(k)).reduce((a, [, n]) => a + n, 0);
-  const all = pairs.reduce((a, [, n]) => a + n, 0);
-  if (!all) return {};
-  const pct = (n) => Math.round((n / all) * 1000) / 10;
-  return { deliveryRate: pct(sum(/deliver|livr/i)), returnRate: pct(sum(/return|retour/i)), cancelRate: pct(sum(/cancel|annul/i)) };
+/**
+ * MDM's reporting rows for one seller (one row per market) → delivery, return and cancel rates in %,
+ * markets served, and the counts behind them.
+ * The platform publishes no rate fields, only its counts per seller — delivered, returned, cancelled
+ * and the orders they came out of (totalLeads + totalParcelsWithoutLead) — so each rate is that count
+ * over the orders of the window. The spec does not state the denominator; the counts are kept in
+ * `inputs` (AM 4.6: a score is stored with the inputs that produced it) so the basis can be changed
+ * without re-reading the platform. No orders in the window → no rates ("no parcels yet").
+ */
+export function ratesFromReporting(rows, { window = null } = {}) {
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+  const sum = (k) => rows.reduce((a, r) => a + n(r?.[k]), 0);
+  const inputs = {
+    window, delivered: sum('delivered'), returned: sum('returned'), cancelled: sum('cancelled'),
+    totalLeads: sum('totalLeads'), totalParcels: sum('totalParcels'), totalParcelsWithoutLead: sum('totalParcelsWithoutLead'),
+    markets: [...new Set(rows.filter((r) => n(r?.totalLeads) + n(r?.totalParcels) > 0).map((r) => String(r.countryId ?? '')).filter(Boolean))],
+  };
+  inputs.orders = inputs.totalLeads + inputs.totalParcelsWithoutLead;
+  const marketsServed = Math.max(1, inputs.markets.length);
+  if (!inputs.orders) return { rates: null, inputs, marketsServed };
+  const pct = (x) => Math.round((x / inputs.orders) * 1000) / 10;
+  const rates = { deliveryRate: pct(inputs.delivered), returnRate: pct(inputs.returned), cancelRate: pct(inputs.cancelled) };
+  if (Object.values(rates).some((v) => v > 100)) {
+    return { rates: null, inputs, marketsServed, problem: `the platform's counts do not add up (${inputs.delivered} delivered, ${inputs.returned} returned, ${inputs.cancelled} cancelled out of ${inputs.orders} orders)` };
+  }
+  return { rates, inputs, marketsServed };
 }
 
 /**
- * The platform figures for one seller: 8 weeks of orders, rates, lifetime orders, last order, wallet.
+ * The platform figures for one seller: 8 weeks of orders, the reporting rates, lifetime orders,
+ * last order, wallet.
  * Best effort: each figure is fetched on its own, so one refused call (a permission the key lacks,
  * a filter the platform rejects) leaves that figure out instead of losing the seller. The reasons
  * come back in `warnings`.
@@ -119,9 +142,21 @@ export async function sellerMetrics(api, sellerId, { now = new Date(), countryId
     }
     out.weeklyOrders = weeklyOrders;
   });
-  await attempt('order rates', async () => {
-    const q = new URLSearchParams({ sellerId: id, 'createdAt[start]': new Date(now.getTime() - 8 * WEEK).toISOString(), 'createdAt[end]': now.toISOString() });
-    Object.assign(out, ratesFromStatuses(await api.call('GET', PATHS.statuses, { query: q.toString() })));
+  // Delivery, return and cancel rates are read from MDM's reporting row for the seller, never
+  // counted here. (The platform's GET /api/v2/orders/statistics/statuses answers 500 "syntax error
+  // at or near $1" when filtered by seller, so it is not used.)
+  await attempt('delivery, return and cancel rates', async () => {
+    const window = { start: new Date(now.getTime() - RATE_WINDOW_WEEKS * WEEK).toISOString(), end: now.toISOString() };
+    const rows = [];
+    for await (const r of api.search(PATHS.sellerReporting, { filters: { sellerId: [id], date: window } })) {
+      if (!r?.seller?.trackingId || String(r.seller.trackingId) === id) rows.push(r);
+    }
+    const { rates, inputs, marketsServed, problem } = ratesFromReporting(rows, { window });
+    out.mirrorInputs = { rates: { ...inputs, readAt: now.toISOString() } };
+    out.marketsServed = marketsServed;
+    if (rates) Object.assign(out, rates);
+    else if (problem) warnings.push(`delivery, return and cancel rates: left out — ${problem}`);
+    else if ((out.weeklyOrders ?? []).some(Boolean)) warnings.push(`delivery, return and cancel rates: MDM reporting has no figures for this seller although it has orders in the last ${RATE_WINDOW_WEEKS} weeks — left unchanged`);
   });
   await attempt('total orders', async () => {
     out.totalOrders = await api.count(PATHS.orders, { sellerId: [id] });
