@@ -162,22 +162,46 @@ export async function handleMdmEvent(evt, db = prisma) {
  * later runs read the sellers changed since the last successful run (newest first, stopping at the
  * first older one) and refresh the figures of every seller whose orders changed.
  */
-export async function syncSellers({ actorId = null, full = false, fetchImpl = fetch, db = prisma, now = new Date() } = {}) {
+let running = null; // one sync at a time: a press of "Sync now" during the scheduled run is refused
+
+export async function syncSellers(opts = {}) {
+  if (!mdmConfig().apiKey) throw Object.assign(new Error('The MDM platform connector is not configured (MDM_API_KEY).'), { status: 503, code: 'not_configured' });
+  if (running) throw Object.assign(new Error('A sync is already running. Wait for it to finish — its progress shows under Recent runs.'), { status: 409, code: 'sync_running' });
+  running = runSync(opts);
+  try { return await running; } finally { running = null; }
+}
+
+/** Runs left "running" by a restart can never finish: mark them as interrupted. */
+export async function closeInterruptedRuns(db = prisma) {
+  return db.integrationRun.updateMany({ where: { status: 'running' }, data: { status: 'failed', finishedAt: new Date(), summary: JSON.stringify({ errors: [{ error: 'Interrupted: the app restarted while this run was in progress.' }] }) } });
+}
+
+// Reasons are grouped (message → count, with a few example seller ids) so a run over thousands of
+// sellers stays readable and small.
+function tally(bucket, ref, reason) {
+  const key = String(reason ?? 'unknown').replace(/\b[0-9a-f]{24}\b|\b[A-Z0-9-]{8,}\b/g, '…').slice(0, 300);
+  const g = bucket[key] ??= { count: 0, examples: [] };
+  g.count++;
+  if (ref && g.examples.length < 5) g.examples.push(ref);
+}
+
+async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = prisma, now = new Date() } = {}) {
   const c = mdmConfig();
-  if (!c.apiKey) throw Object.assign(new Error('The MDM platform connector is not configured (MDM_API_KEY).'), { status: 503, code: 'not_configured' });
   const last = full ? null : await db.integrationRun.findFirst({ where: { kind: 'mdm_sync', status: 'completed' }, orderBy: { startedAt: 'desc' } });
   const ctx = await upsertContext(db);
   const api = client({ url: c.url, apiKey: c.apiKey, paymentPassword: c.paymentPassword, fetchImpl });
   const run = await db.integrationRun.create({ data: { kind: 'mdm_sync', status: 'running', actorId } });
-  const summary = { full: !last, fetched: 0, updated: 0, leadsCreated: 0, sellersCreated: 0, skipped: [], errors: [] };
+  const summary = { full: !last, fetched: 0, updated: 0, leadsCreated: 0, sellersCreated: 0, skippedCount: 0, errorCount: 0, warningCount: 0, reasons: { skipped: {}, errors: {}, warnings: {} } };
   const done = new Set();
   const record = (r, row) => {
     if (r.action === 'updated') summary.updated++;
     else if (r.action === 'lead_created') summary.leadsCreated++;
     else if (r.action === 'seller_created') summary.sellersCreated++;
-    else if (r.action === 'skipped') summary.skipped.push({ ref: r.ref ?? row?.phone ?? null, reason: r.reason });
-    else summary.errors.push({ ref: r.ref ?? null, error: r.reason });
+    else if (r.action === 'skipped') { summary.skippedCount++; tally(summary.reasons.skipped, r.ref ?? row?.phone, r.reason); }
+    else { summary.errorCount++; tally(summary.reasons.errors, r.ref, r.reason); }
   };
+  const warn = (ref, warnings) => { for (const w of warnings) { summary.warningCount++; tally(summary.reasons.warnings, ref, w); } };
+  const save = (status) => db.integrationRun.update({ where: { id: run.id }, data: { status, ...(status === 'running' ? {} : { finishedAt: new Date() }), summary: JSON.stringify(summary) } });
   try {
     const since = last?.startedAt ?? null;
     // platform account managers by id → their email, to keep an existing owner who is one of ours
@@ -186,11 +210,16 @@ export async function syncSellers({ actorId = null, full = false, fetchImpl = fe
       const row = sellerToRow(s);
       if (since && row.updatedAt && row.updatedAt < since) break; // newest first: the rest are unchanged
       summary.fetched++;
+      if (summary.fetched % 200 === 0) await save('running'); // progress shows on the page
       if (!row.mdmRef || done.has(row.mdmRef)) continue;
       done.add(row.mdmRef);
       try {
         const known = await sellerFor({ mdmRef: row.mdmRef, phone: row.phone }, db).catch(() => null);
-        const metrics = known || isAccepted(row.joinStatus) ? await sellerMetrics(api, row.mdmRef, { now, countryId: row.countryId }) : {};
+        let metrics = {};
+        if (known || isAccepted(row.joinStatus)) {
+          const m = await sellerMetrics(api, row.mdmRef, { now, countryId: row.countryId });
+          metrics = m.metrics; warn(row.mdmRef, m.warnings);
+        }
         record(await upsertFromMdm({ ...row, metrics, managerEmail: platformManagers.get(row.accountManagerRef) ?? null }, ctx, db), row);
       } catch (err) { record({ action: 'error', ref: row.mdmRef, reason: err.message }); }
     }
@@ -202,19 +231,21 @@ export async function syncSellers({ actorId = null, full = false, fetchImpl = fe
       if (!seller) continue; // not one of ours yet: it arrives with its seller record
       try {
         const countryId = c.paymentPassword ? (await api.call('GET', `/api/sellers/${encodeURIComponent(ref)}`))?.country?.id : null;
-        const { data, errors } = mirrorData(await sellerMetrics(api, ref, { now, countryId }));
+        const m = await sellerMetrics(api, ref, { now, countryId });
+        warn(ref, m.warnings);
+        const { data, errors } = mirrorData(m.metrics);
         if (errors.length) { record({ action: 'error', ref, reason: errors.join(' ') }); continue; }
         await applyMirror(seller.id, data, db);
         summary.updated++;
       } catch (err) { record({ action: 'error', ref, reason: err.message }); }
     }
-    await db.integrationRun.update({ where: { id: run.id }, data: { status: 'completed', finishedAt: new Date(), summary: JSON.stringify(summary) } });
+    await save('completed');
   } catch (err) {
-    summary.errors.push({ error: err.message });
-    await db.integrationRun.update({ where: { id: run.id }, data: { status: 'failed', finishedAt: new Date(), summary: JSON.stringify(summary) } });
+    summary.errorCount++; tally(summary.reasons.errors, null, err.message);
+    await save('failed');
     await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync_failed', reason: err.message }, db);
     throw err;
   }
-  await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync', after: { full: summary.full, fetched: summary.fetched, updated: summary.updated, leadsCreated: summary.leadsCreated, sellersCreated: summary.sellersCreated, skipped: summary.skipped.length } }, db);
+  await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync', after: { full: summary.full, fetched: summary.fetched, updated: summary.updated, leadsCreated: summary.leadsCreated, sellersCreated: summary.sellersCreated, skipped: summary.skippedCount, errors: summary.errorCount } }, db);
   return summary;
 }

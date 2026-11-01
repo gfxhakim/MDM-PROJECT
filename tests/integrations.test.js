@@ -146,7 +146,9 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   try { s = await syncSellers({ actorId: U.admin.id, fetchImpl: mdm.fetchImpl }); } finally { delete process.env.MDM_API_KEY; delete process.env.MDM_PAYMENT_PASSWORD; }
   assert.equal(mdm.calls[0].key, 'k');
   assert.equal(s.full, true);
-  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skipped.length], [6, 1, 1, 1, 3]);
+  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skippedCount, s.errorCount], [6, 1, 1, 1, 3, 0]);
+  assert.equal(s.reasons.skipped['Market FR is not Libya, Iraq or Lebanon.'].count, 1);
+  assert.deepEqual(s.reasons.skipped['Rejected on the platform (rejected).'].examples, ['MDM-S-REJ']);
   const known = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-3' } });
   assert.equal(known.totalOrders, 40); assert.deepEqual(JSON.parse(known.weeklyOrders), [1, 1, 1, 1, 1, 1, 1, 1]);
   assert.equal(known.deliveryRate, 80); assert.equal(known.returnRate, 15); assert.equal(known.cancelRate, 5); assert.equal(known.wallet, 310.5);
@@ -163,6 +165,26 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   assert.equal(await prisma.contact.count({ where: { phone: { in: ['+218915550033', '+218915550034'] } } }), 0, 'old and rejected registrations are not opened as leads');
   assert.equal(await prisma.integrationRun.count({ where: { kind: 'mdm_sync', status: 'completed' } }), 1);
   assert.equal(await prisma.eventLog.count({ where: { action: 'mdm.sync' } }), 1);
+
+  // a figure the platform refuses is left out with its reason; the seller still comes in
+  const picky = fakeMdm({
+    sellers: [mdmSeller('MDM-S-P', '+218915550040', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z' })],
+    orders: { 'MDM-S-P': 7 }, fail: (method, path) => (path.endsWith('/statistics/statuses') ? 403 : null),
+  });
+  process.env.MDM_API_KEY = 'k';
+  try { s = await syncSellers({ full: true, fetchImpl: picky.fetchImpl }); } finally { delete process.env.MDM_API_KEY; }
+  assert.equal(s.sellersCreated, 1); assert.equal(s.errorCount, 0); assert.equal(s.warningCount, 1);
+  assert.match(Object.keys(s.reasons.warnings)[0], /^order rates: MDM API GET .* responded 403/);
+  assert.equal((await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-P' } })).totalOrders, 7);
+
+  // one sync at a time
+  process.env.MDM_API_KEY = 'k';
+  try {
+    const slow = fakeMdm({ sellers: [] });
+    const first = syncSellers({ fetchImpl: async (u, o) => { await new Promise((r) => setTimeout(r, 50)); return slow.fetchImpl(u, o); } });
+    await assert.rejects(syncSellers({ fetchImpl: slow.fetchImpl }), (e) => e.status === 409);
+    await first;
+  } finally { delete process.env.MDM_API_KEY; }
 
   // the next run only reads what changed: nothing updated since → no seller is re-read
   const quiet = fakeMdm({ sellers: [mdmSeller('MDM-S-3', '+218915550030', { joinStatus: 'accepted', updatedAt: '2020-01-01T00:00:00Z' })], orders: {} });

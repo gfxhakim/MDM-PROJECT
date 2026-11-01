@@ -79,8 +79,24 @@ const pill = (on, yes = 'Connected', no = 'Not connected') => `<span class="pill
 let state = { status: null, file: null, previewed: false };
 
 function syncText(sm) {
+  const skipped = sm.skippedCount ?? sm.skipped?.length ?? 0;
+  const errors = sm.errorCount ?? sm.errors?.length ?? 0;
   return `${sm.full ? 'full · ' : ''}${sm.fetched ?? 0} sellers read, ${sm.updated ?? 0} sellers updated, ${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`
-    + `${sm.skipped?.length ? `, ${sm.skipped.length} skipped` : ''}${sm.errors?.length ? `, ${sm.errors.length} errors` : ''}`;
+    + `${skipped ? `, ${skipped} skipped` : ''}${errors ? `, ${errors} errors` : ''}${sm.warningCount ? `, ${sm.warningCount} figures missing` : ''}`;
+}
+
+// Why sellers were skipped or failed, grouped by reason, under the run's row.
+function reasonsHtml(sm) {
+  const groups = [['errors', 'Errors'], ['warnings', 'Figures that could not be read'], ['skipped', 'Skipped']];
+  const parts = [];
+  for (const [k, label] of groups) {
+    const g = Object.entries(sm.reasons?.[k] ?? {}).sort((a, b) => b[1].count - a[1].count);
+    if (!g.length) continue;
+    parts.push(`<div style="margin-top:6px"><b>${label}</b>` + g.slice(0, 12).map(([why, v]) =>
+      `<div class="muted" style="margin-left:8px">${v.count} × ${esc(why)}${v.examples?.length ? ` <span style="opacity:.7">(e.g. ${v.examples.map(esc).join(', ')})</span>` : ''}</div>`).join('') + '</div>');
+  }
+  if (!parts.length && sm.errors?.length) parts.push(`<div class="muted">${sm.errors.slice(0, 5).map((e) => esc(e.error)).join('<br>')}</div>`);
+  return parts.join('');
 }
 
 function card(title, lines, extra = '') {
@@ -123,7 +139,8 @@ function renderStatus() {
       ? `${esc(sm.kind)} · ${esc(sm.filename || '')} · ${sm.succeeded ?? 0} imported, ${sm.skip ?? 0} skipped, ${sm.failed ?? 0} failed`
       : r.kind === 'mdm_writeback' ? (sm.error ? esc(sm.error) : `${sm.sent ?? 0} recorded on MDM${sm.refused?.length ? `, ${sm.refused.length} refused: ${esc(sm.refused[0].reason)}` : ''}`)
       : syncText(sm);
-    return `<tr><td>${when(r.startedAt)}</td><td>${esc(r.kind)}</td><td><span class="pill ${r.status === 'completed' ? 'on' : r.status === 'failed' ? 'fail' : 'off'}">${esc(r.status)}</span></td><td>${text}</td></tr>`;
+    const why = r.kind === 'mdm_sync' ? reasonsHtml(sm) : '';
+    return `<tr><td>${when(r.startedAt)}</td><td>${esc(r.kind)}</td><td><span class="pill ${r.status === 'completed' ? 'on' : r.status === 'failed' ? 'fail' : 'off'}">${esc(r.status)}</span></td><td>${text}${why ? `<details><summary style="cursor:pointer;color:var(--red)">Why</summary>${why}</details>` : ''}</td></tr>`;
   }).join('') : '<tr><td colspan="4" class="muted">No runs yet.</td></tr>';
 }
 
