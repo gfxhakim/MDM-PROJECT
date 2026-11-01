@@ -17,7 +17,7 @@ const { prisma } = await import('../src/db.js');
 const { createApp } = await import('../src/app.js');
 const cfg = await import('../src/config/service.js');
 const { hashPassword } = await import('../src/auth/service.js');
-const { syncSellers } = await import('../src/integrations/mdm.js');
+const { syncSellers, startSync } = await import('../src/integrations/mdm.js');
 const { ratesFromReporting } = await import('../src/integrations/mdm-api.js');
 const { parseCsv } = await import('../src/integrations/importer.js');
 
@@ -152,6 +152,13 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   assert.equal(s.full, true);
   assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skippedCount, s.errorCount], [7, 1, 2, 1, 3, 0]);
   assert.equal(s.reasons.skipped['Market FRA is not Libya, Iraq or Lebanon (the platform also lists MAR for this seller).'].count, 1);
+  // the run can be followed live: how far it is and the last outcomes
+  assert.equal(s.total, 7, 'a full run knows how many sellers the platform has');
+  assert.equal(s.live.current, null, 'nothing is being read once the run is over');
+  const fed = s.live.recent.find((e) => e.ref === 'MDM-S-NEW');
+  assert.equal(fed.action, 'seller_created'); assert.match(fed.note, /^LY book · 12 orders, delivery 68\.8%, returns 6\.3% · Kept with/);
+  assert.equal(s.live.recent.find((e) => e.ref === 'MDM-S-LEAD').action, 'lead_created');
+  assert.match(s.live.recent.find((e) => e.ref === 'MDM-S-FR').note, /^Market FRA/);
   const dz = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-DZ' }, include: { contact: true } });
   assert.equal(dz.market, 'LY'); assert.equal(dz.contact.country, 'LY'); assert.equal(dz.wallet, -40);
   assert.equal(mdm.calls.find((c) => c.path.includes('wallets') && c.body.filters.sellerId[0] === 'MDM-S-DZ').body.filters.countryId, 'c-ly', "the wallet is read in the seller's market, not the home country");
@@ -213,6 +220,19 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
     const first = syncSellers({ fetchImpl: async (u, o) => { await new Promise((r) => setTimeout(r, 50)); return slow.fetchImpl(u, o); } });
     await assert.rejects(syncSellers({ fetchImpl: slow.fetchImpl }), (e) => e.status === 409);
     await first;
+  } finally { delete process.env.MDM_API_KEY; }
+
+  // the sync button answers at once with the run to follow; the run itself carries the outcome
+  process.env.MDM_API_KEY = 'k';
+  try {
+    const slow = fakeMdm({ sellers: [] });
+    const started = await startSync({ fetchImpl: async (u, o) => { await new Promise((r) => setTimeout(r, 50)); return slow.fetchImpl(u, o); } });
+    assert.equal(started.started, true);
+    const running = await prisma.integrationRun.findUnique({ where: { id: started.runId } });
+    assert.equal(running.status, 'running');
+    await assert.rejects(startSync({ fetchImpl: slow.fetchImpl }), (e) => e.status === 409);
+    for (let i = 0; i < 100 && (await prisma.integrationRun.findUnique({ where: { id: started.runId } })).status === 'running'; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await prisma.integrationRun.findUnique({ where: { id: started.runId } })).status, 'completed');
   } finally { delete process.env.MDM_API_KEY; }
 
   // the next run only reads what changed: nothing updated since → no seller is re-read
