@@ -200,6 +200,7 @@ model Seller {
   lastOrderAt         DateTime?
   totalOrders         Int     @default(0)    // lifetime orders (playbook gates)
   weeklyReturnRates   String  @default("[]") // JSON, weeks 1..8 oldest first (r6 "sustained")
+  mirrorInputs        String  @default("{}") // JSON: the platform counts behind the rates (window, delivered, returned, cancelled, orders) — AM 4.6
   // Feature F5 (not yet written by MDM platform — Engagement fallback applies)
   lastLoginAt         DateTime?
   lastStoreUpdateAt   DateTime?
