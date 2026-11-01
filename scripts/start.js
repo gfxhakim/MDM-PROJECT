@@ -16,6 +16,16 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.env.NODE_ENV ||= 'production';
 
 const volume = process.env.RAILWAY_VOLUME_MOUNT_PATH || (existsSync('/data') ? '/data' : null);
+// Values copied from .env.example (hosts like Railway offer them as "suggested variables") are
+// development placeholders: a database file outside the volume, and a publicly known secret.
+if (process.env.DATABASE_URL && volume && /^file:\.{0,2}\//.test(process.env.DATABASE_URL)) {
+  console.warn(`DATABASE_URL=${process.env.DATABASE_URL} is the development value — ignored; using the volume instead.`);
+  delete process.env.DATABASE_URL;
+}
+if (process.env.JWT_SECRET === 'change-me') {
+  console.warn('JWT_SECRET=change-me is the example value — ignored; using a generated secret.');
+  delete process.env.JWT_SECRET;
+}
 if (!process.env.DATABASE_URL) {
   process.env.DATABASE_URL = volume ? `file:${join(volume, 'mdm.db')}` : `file:${join(root, 'prisma', 'prod.db')}`;
   console.log(`DATABASE_URL not set — using ${process.env.DATABASE_URL}`);
