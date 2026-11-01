@@ -136,20 +136,25 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
       mdmSeller('MDM-S-LEAD', '+218915550032', { createdAt: recent }),
       mdmSeller('MDM-S-OLD', '+218915550033', { createdAt: '2024-01-01T00:00:00Z' }),
       mdmSeller('MDM-S-REJ', '+218915550034', { joinStatus: 'rejected', createdAt: recent }),
-      mdmSeller('MDM-S-FR', '+33612345678', { joinStatus: 'accepted', country: { id: 'c-fr', code: 'FR' } }),
+      mdmSeller('MDM-S-FR', '+33612345678', { joinStatus: 'accepted', country: { id: 'c-fr', code: 'FRA' }, countries: [{ id: 'c-ma', code: 'MAR' }] }),
+      // lives in Algeria, sells in Libya: the market is where the platform delivers for the seller
+      mdmSeller('MDM-S-DZ', '+213661234567', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', country: { id: 'c-dz', code: 'DZA' }, countries: [{ id: 'c-ma', code: 'MAR' }, { id: 'c-ly', code: 'LBY' }] }),
     ],
-    orders: { 'MDM-S-3': 40, 'MDM-S-NEW': 12 },
+    orders: { 'MDM-S-3': 40, 'MDM-S-NEW': 12, 'MDM-S-DZ': 3 },
     reporting: { 'MDM-S-NEW': [{ countryId: 'c-ly', delivered: 8, returned: 1, cancelled: 1, totalLeads: 12, totalParcels: 10 }, { countryId: 'c-iq', delivered: 3, returned: 0, cancelled: 0, totalLeads: 4, totalParcels: 3 }] },
     managers: [{ trackingId: 'AM-R', email: 'rania@t.local' }],
-    wallets: { 'MDM-S-3': 310.5 },
+    wallets: { 'MDM-S-3': 310.5, 'MDM-S-DZ': -40 },
   });
   process.env.MDM_API_KEY = 'k'; process.env.MDM_PAYMENT_PASSWORD = 'pay';
   let s;
   try { s = await syncSellers({ actorId: U.admin.id, fetchImpl: mdm.fetchImpl }); } finally { delete process.env.MDM_API_KEY; delete process.env.MDM_PAYMENT_PASSWORD; }
   assert.equal(mdm.calls[0].key, 'k');
   assert.equal(s.full, true);
-  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skippedCount, s.errorCount], [6, 1, 1, 1, 3, 0]);
-  assert.equal(s.reasons.skipped['Market FR is not Libya, Iraq or Lebanon.'].count, 1);
+  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skippedCount, s.errorCount], [7, 1, 2, 1, 3, 0]);
+  assert.equal(s.reasons.skipped['Market FRA is not Libya, Iraq or Lebanon (the platform also lists MAR for this seller).'].count, 1);
+  const dz = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-DZ' }, include: { contact: true } });
+  assert.equal(dz.market, 'LY'); assert.equal(dz.contact.country, 'LY'); assert.equal(dz.wallet, -40);
+  assert.equal(mdm.calls.find((c) => c.path.includes('wallets') && c.body.filters.sellerId[0] === 'MDM-S-DZ').body.filters.countryId, 'c-ly', "the wallet is read in the seller's market, not the home country");
   assert.deepEqual(s.reasons.skipped['Rejected on the platform (rejected).'].examples, ['MDM-S-REJ']);
   const known = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-3' } });
   assert.equal(known.totalOrders, 40); assert.deepEqual(JSON.parse(known.weeklyOrders), [1, 1, 1, 1, 1, 1, 1, 1]);
