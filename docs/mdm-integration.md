@@ -37,6 +37,33 @@ header `x-api-key: MDM_API_KEY`.
 - **Already a lead here:** the lead is linked to its MDM id and otherwise left alone, so the
   activation gate still applies.
 
+**Skipped sellers.** Every seller the pull cannot place is kept aside, with what MDM says about
+it (name, phone, home country and selling countries, join status, registration date, MDM's
+account manager) and the reason: market outside Libya, Iraq and Lebanon; no valid phone; rejected
+on MDM; registration older than `MDM_LEAD_MAX_AGE_DAYS`; already here. The list is on the
+Integrations page (Admin only, `GET /api/integrations/mdm/skipped`). For each seller, alone or in
+bulk (at most 200 per run, a written note for a bulk run), the Admin can:
+
+- **Place as seller** in Libya, Iraq or Lebanon: a contact, a conversation and a seller record are
+  created here, exactly as the import does it. The account manager is picked by AM 3.2 (same
+  market, smallest book, no cross-market fallback), or the handover rule r1 when MDM accepted the
+  seller in the last 14 days (welcome task); the Admin can name a manager who covers the market and
+  has room. The seller's figures are read from MDM by the next sync (one is started at once when
+  nothing is running). The assignment reaches MDM through the write-back like any other.
+- **Open as lead**: capture rule r1, in the market the Admin chooses.
+- **Leave out**, with a reason; a left-out seller can be put back any time.
+- A seller already here is only shown: a lead is activated in the onboarding console, so the
+  activation gate and the handoff record still apply.
+
+Each seller in a run is handled and reported on its own (a refused seller does not stop the
+others); one audit entry per run carries the full list and every result (`mdm.skipped_decided`).
+A seller the pull later brings in by its own rules (for example after MDM corrects its country) is
+marked *imported*; one we placed or opened comes back on every run as "already here" and keeps
+its decision. Nothing on this list is written to MDM. **This list is not in the specs:** it answers
+the owner's request of 2 Nov 2026 to keep every skipped seller aside and decide by hand; its
+actions are the spec's own mechanisms (AM 3.2, r1, capture r1, OA 13.2 bulk guardrails, one audit
+entry).
+
 **Each seller's figures:**
 
 - `POST /api/v2/orders/search` filtered by `sellerId` and `createdAt` gives:

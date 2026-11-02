@@ -48,6 +48,15 @@ th{color:var(--muted);font-weight:600}
 .feed .t{color:var(--muted);flex:none;font-variant-numeric:tabular-nums}
 .feed .pill{flex:none}
 code{font-size:12px;background:#F3F4F6;padding:1px 5px;border-radius:4px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px}
+.tab{font:inherit;font-size:13px;padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:#fff;cursor:pointer;color:var(--ink3)}
+.tab.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+.toolbar{padding:10px 12px;border:1px solid var(--line);border-radius:var(--r);background:#FAFAFA;margin-top:10px}
+.toolbar label{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink3)}
+.toolbar .row:first-child{margin-top:0}
+input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;border:1px solid var(--line);border-radius:var(--r);padding:0 10px;min-width:240px;background:#fff}
+#skipped table td{max-width:320px}
+#skipped ul{margin:6px 0 0;padding-inline-start:18px}
 </style>
 </head>
 <body>
@@ -59,6 +68,31 @@ code{font-size:12px;background:#F3F4F6;padding:1px 5px;border-radius:4px}
 </header>
 <main>
   <div class="grid" id="status"><div class="card muted">Loading…</div></div>
+
+  <section class="card" id="skipped">
+    <h2>Skipped sellers <span class="pill off" id="skWaiting">0 waiting</span></h2>
+    <p>Sellers the MDM import could not place, kept here with what the platform says about them. Choose where each one goes: place it in an account manager's book (same market, smallest book, unless you name a manager), open it as an onboarding lead, or leave it out. A placed seller's figures are read from MDM on the next sync. A seller that is already here cannot be placed twice; a lead is activated in the onboarding console.</p>
+    <div class="tabs" id="skTabs"></div>
+    <div class="row">
+      <select id="skReason"><option value="">All reasons</option></select>
+      <input type="search" id="skQ" placeholder="Search name, phone or MDM id">
+    </div>
+    <div class="toolbar" id="skTools" hidden>
+      <div class="row" id="skPlaceWrap">
+        <label>Market <select id="skMarket"><option value="">From the platform</option><option value="LY">Libya</option><option value="IQ">Iraq</option><option value="LB">Lebanon</option></select></label>
+        <label>Account manager <select id="skManager"></select></label>
+      </div>
+      <div class="row">
+        <input type="text" id="skNote" style="flex:1 1 300px" placeholder="Note (needed for several sellers, or to leave one out)">
+        <button class="btn primary" id="skPlace">Place as seller <span class="n"></span></button>
+        <button class="btn" id="skLead">Open as lead <span class="n"></span></button>
+        <button class="btn" id="skLeave">Leave out <span class="n"></span></button>
+        <button class="btn" id="skReopen" hidden>Put back on the list <span class="n"></span></button>
+      </div>
+    </div>
+    <div id="skMsg"></div>
+    <div class="scroll" style="max-height:520px"><table><thead id="skHead"></thead><tbody id="skRows"><tr><td class="muted">Loading…</td></tr></tbody></table></div>
+  </section>
 
   <section class="card" id="zoho" hidden>
     <h2>Zoho import</h2>
@@ -139,7 +173,8 @@ function renderStatus() {
     (top?.status === 'running' ? liveHtml(top) : '')
     + card(`MDM platform ${pill(s.mdm.pull)}`, [esc(s.mdm.detail),
       `Webhook: ${s.mdm.events ? 'accepted at <code>/api/integrations/mdm/events</code>' : 'off (set MDM_WEBHOOK_SECRET)'}`,
-      `Last sync: ${last ? `${when(last.at)} — ${esc(last.status)}${last.summary ? `, ${syncText(last.summary)}` : ''}` : 'never'}`],
+      `Last sync: ${last ? `${when(last.at)} — ${esc(last.status)}${last.summary ? `, ${syncText(last.summary)}` : ''}` : 'never'}`,
+      s.mdm.skippedWaiting ? `<a href="#skipped" style="color:var(--red);font-weight:600">${s.mdm.skippedWaiting} skipped sellers waiting for your decision</a>` : 'No skipped sellers waiting.'],
       `<div class="row"><button class="btn" id="sync" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Sync now</button>`
       + `<button class="btn" id="full" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Full resync</button></div>`)
     + card(`Our work recorded on MDM ${pill(wb.on, 'On', 'Off')}`, [esc(wb.detail),
@@ -204,8 +239,118 @@ async function upload(dryRun) {
   } finally { if (dryRun) btn.disabled = false; }
 }
 
+// ───────── Skipped sellers: kept aside by the import, decided here ─────────
+const sk = { tab: 'waiting', reason: '', q: '', data: null, selected: new Set(), loadedAt: 0 };
+const DECISION_LABEL = { placed: 'Placed as a seller', lead: 'Opened as a lead', left_out: 'Left out', imported: 'Imported by the sync' };
+const MARKET_NAME = { LY: 'Libya', IQ: 'Iraq', LB: 'Lebanon' };
+const showSkErr = (e) => { document.getElementById('skMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
+
+async function loadSkipped() {
+  const qs = new URLSearchParams({ decision: sk.tab });
+  if (sk.reason) qs.set('reason', sk.reason);
+  if (sk.q) qs.set('q', sk.q);
+  sk.data = await API.get('/api/integrations/mdm/skipped?' + qs);
+  sk.loadedAt = Date.now();
+  const ok = new Set(sk.data.items.filter((i) => !i.blocked).map((i) => i.id));
+  sk.selected = new Set([...sk.selected].filter((id) => ok.has(id)));
+  renderSkipped();
+}
+
+function countryCell(i) {
+  const home = i.places.find((p) => p.home) ?? null;
+  const sells = i.places.filter((p) => !p.home && p.code !== home?.code);
+  const name = (p) => esc(p.name || p.code);
+  return `<span data-i18n="off">${home ? name(home) : esc(i.country || '—')}</span>${sells.length ? ` <span class="muted">sells in</span> <span data-i18n="off">${sells.map(name).join(', ')}</span>` : ''}`;
+}
+
+function outcomeCell(i) {
+  const o = i.outcome || {};
+  if (i.decision === 'placed') return `<br><span class="muted"><span>${esc(MARKET_NAME[o.market] || o.market || '')}</span> · <span>${esc(o.ownership || '')}</span></span><br><span class="muted">${i.figuresAt ? 'Figures read from MDM.' : 'Figures come with the next sync.'}</span>`;
+  if (i.decision === 'lead') return `<br><span class="muted">${o.ticketId ? (o.assigned ? 'Onboarding lead, assigned.' : 'Onboarding lead — waiting in the holding queue.') : 'Contact created, no onboarding ticket.'}</span>`;
+  if (i.decision === 'imported') return `<br><span class="muted">${o.action === 'lead_created' ? 'Came in as an onboarding lead.' : o.action === 'seller_created' ? 'Came in as a seller.' : 'Came in with the sync.'}</span>`;
+  return '';
+}
+
+function renderSkipped() {
+  const d = sk.data; if (!d) return;
+  const c = d.counts;
+  const waiting = sk.tab === 'waiting'; const leftOut = sk.tab === 'left_out'; const selectable = waiting || leftOut;
+  document.getElementById('skWaiting').textContent = `${c.waiting} waiting`;
+  document.getElementById('skTabs').innerHTML = [['waiting', 'Waiting', c.waiting], ['placed', 'Placed', c.placed], ['lead', 'Opened as leads', c.lead], ['left_out', 'Left out', c.left_out], ['imported', 'Imported later', c.imported]]
+    .map(([k, l, n]) => `<button class="tab ${sk.tab === k ? 'active' : ''}" data-tab="${k}">${l} <span class="n">(${n ?? 0})</span></button>`).join('');
+  document.getElementById('skReason').innerHTML = '<option value="">All reasons</option>' + Object.entries(d.reasons)
+    .map(([k, l]) => `<option value="${k}" ${sk.reason === k ? 'selected' : ''}>${esc(l)}${c.byReason[k] ? ` (${c.byReason[k]})` : ''}</option>`).join('');
+  const mSel = document.getElementById('skManager'); const keep = mSel.value;
+  mSel.innerHTML = '<option value="">By the rule — same market, smallest book</option>' + d.managers.map((m) =>
+    `<option value="${m.id}" ${keep === m.id ? 'selected' : ''} ${m.bookSize >= d.maxBook ? 'disabled' : ''}>${esc(m.name)} — ${m.markets.join(', ')} · ${m.bookSize}/${d.maxBook}${m.bookSize >= d.maxBook ? ' (full)' : ''}</option>`).join('');
+  document.getElementById('skTools').hidden = !selectable;
+  document.getElementById('skPlaceWrap').hidden = !waiting;
+  for (const id of ['skPlace', 'skLead', 'skLeave']) document.getElementById(id).hidden = !waiting;
+  document.getElementById('skReopen').hidden = !leftOut;
+  const n = sk.selected.size;
+  for (const el of document.querySelectorAll('#skTools button .n')) el.textContent = n ? `(${n})` : '';
+  for (const id of ['skPlace', 'skLead', 'skLeave', 'skReopen']) { const b = document.getElementById(id); b.disabled = !n; b.title = n ? '' : 'Select at least one seller'; }
+  document.getElementById('skHead').innerHTML = `<tr><th>${selectable ? '<input type="checkbox" id="skAll" title="Select all on this page">' : ''}</th><th>MDM id</th><th>Name</th><th>Phone</th><th>Country</th><th>MDM status</th><th>Registered</th><th>${waiting ? 'Why skipped' : 'Decision'}</th><th>Seen</th></tr>`;
+  document.getElementById('skRows').innerHTML = d.items.length ? d.items.map((i) => {
+    const box = selectable ? `<input type="checkbox" data-id="${i.id}" ${sk.selected.has(i.id) ? 'checked' : ''} ${i.blocked ? `disabled title="${esc(i.blocked)}"` : ''}>` : '';
+    const why = waiting
+      ? `${esc(i.reason)}${i.suggestedMarket && i.suggestedMarket !== i.country ? `<br><span class="muted">Platform also lists </span><b>${esc(MARKET_NAME[i.suggestedMarket] || i.suggestedMarket)}</b><span class="muted"> — used unless you choose a market.</span>` : ''}`
+      : `<b>${DECISION_LABEL[i.decision] || esc(i.decision)}</b> <span class="muted" data-i18n="off">${when(i.decidedAt)}</span>${i.decidedBy ? ` <span class="muted">by</span> <span data-i18n="off">${esc(i.decidedBy)}</span>` : ''}`
+        + `${i.decisionNote ? `<br><span class="muted" data-i18n="off">“${esc(i.decisionNote)}”</span>` : ''}${outcomeCell(i)}${leftOut ? `<br><span class="muted">${esc(i.reason)}</span>` : ''}`;
+    return `<tr><td>${box}</td><td><code>${esc(i.mdmRef)}</code></td><td data-i18n="off">${esc(i.name || '—')}</td><td data-i18n="off">${esc(i.phone || '—')}</td><td>${countryCell(i)}</td>`
+      + `<td><span data-i18n="off">${esc(i.joinStatus || '—')}</span>${i.joinStatusDate ? `<br><span class="muted" data-i18n="off">${new Date(i.joinStatusDate).toLocaleDateString()}</span>` : ''}</td>`
+      + `<td data-i18n="off">${i.registeredAt ? new Date(i.registeredAt).toLocaleDateString() : '—'}</td><td>${why}</td>`
+      + `<td class="muted"><span data-i18n="off">${i.seenCount}×</span> · <span>last seen</span> <span data-i18n="off">${when(i.lastSeenAt)}</span></td></tr>`;
+  }).join('') : `<tr><td colspan="9" class="muted">${waiting ? 'Nothing waiting — every seller the import read is placed, a lead, or decided.' : 'Nothing here yet.'}</td></tr>`;
+  for (const b of document.querySelectorAll('#skTabs .tab')) b.onclick = () => { sk.tab = b.dataset.tab; sk.selected.clear(); document.getElementById('skMsg').innerHTML = ''; loadSkipped().catch(showSkErr); };
+  const all = document.getElementById('skAll');
+  if (all) all.onchange = () => { for (const i of d.items) if (!i.blocked) { if (all.checked) sk.selected.add(i.id); else sk.selected.delete(i.id); } renderSkipped(); };
+  for (const cb of document.querySelectorAll('#skRows input[type=checkbox]')) cb.onchange = () => { if (cb.checked) sk.selected.add(cb.dataset.id); else sk.selected.delete(cb.dataset.id); renderSkipped(); };
+  I18N.apply(document.getElementById('skipped'));
+}
+
+// One decision run. The confirmation states exactly what changes and on how many sellers; the
+// server reports each seller on its own and writes one audit entry for the run.
+async function decide(action) {
+  const d = sk.data; const ids = [...sk.selected]; if (!d || !ids.length) return;
+  const t = I18N.t;
+  const market = document.getElementById('skMarket').value || null;
+  const managerId = document.getElementById('skManager').value || null;
+  const note = document.getElementById('skNote').value.trim() || null;
+  const manager = d.managers.find((m) => m.id === managerId) ?? null;
+  const lines = [t(`${ids.length} sellers selected.`)];
+  if (action === 'place') {
+    lines.push(t('Place them as sellers?'), `${t('Market:')} ${market ? t(MARKET_NAME[market]) : t('the market the platform lists for each seller')}`,
+      `${t('Account manager:')} ${manager ? manager.name : t('by the rule — same market, smallest book')}`,
+      t('Each gets a contact, a conversation and a seller record here. Their figures are read from MDM on the next sync. MDM is not changed, except that the assigned account manager is recorded there when "Our work recorded on MDM" is on.'));
+  } else if (action === 'lead') {
+    lines.push(t('Open them as onboarding leads?'), `${t('Market:')} ${market ? t(MARKET_NAME[market]) : t('the market the platform lists for each seller')}`,
+      t('Each gets a contact, a conversation and an onboarding ticket, assigned by the capture rule.'));
+  } else if (action === 'leave_out') lines.push(t('Leave them out?'), t('They stay listed under "Left out" and can be put back any time.'));
+  else lines.push(t('Put them back on the list?'));
+  if (!confirm(lines.join('\n'))) return;
+  let phone = null;
+  const one = ids.length === 1 ? d.items.find((i) => i.id === ids[0]) : null;
+  if (one && one.reasonCode === 'phone' && (action === 'place' || action === 'lead')) {
+    phone = prompt(t('This seller has no valid phone on MDM. Type the number to use, in international format (+218…):'));
+    if (!phone) return;
+  }
+  for (const id of ['skPlace', 'skLead', 'skLeave', 'skReopen']) document.getElementById(id).disabled = true;
+  try {
+    const r = await API.post('/api/integrations/mdm/skipped/decide', { ids, action, market, managerId, note, phone });
+    const failed = r.results.filter((x) => !x.ok);
+    // each sentence in its own node, so a language switch after the fact still translates it
+    document.getElementById('skMsg').innerHTML = `<div class="msg ${r.failed ? (r.done ? 'off' : 'fail') : 'on'}"><span>${esc(t(`${r.done} done, ${r.failed} not done.`))}</span> <span>${esc(t('One audit entry records this run.'))}</span>`
+      + `${action === 'place' && r.done ? ` <span>${esc(t(r.sync?.started ? 'A sync has started to read their figures.' : 'Their figures come with the next sync.'))}</span>` : ''}`
+      + `${failed.length ? `<div style="margin-top:6px"><b>${esc(t('Not done:'))}</b><ul>${failed.slice(0, 30).map((x) => `<li><code>${esc(x.mdmRef || x.id)}</code> <span data-i18n="off">${esc(x.name || '')}</span> — <span>${esc(x.reason)}</span></li>`).join('')}</ul></div>` : ''}</div>`;
+    sk.selected.clear(); document.getElementById('skNote').value = '';
+    sk.loadedAt = 0;
+    await load();
+  } catch (e) { showSkErr(e); renderSkipped(); }
+}
+
 let timer = null;
-// While a sync runs, the page re-reads its progress every 3 seconds.
+// While a sync runs, the page re-reads its progress every 3 seconds (and the skipped list every 10).
 function follow() {
   clearTimeout(timer);
   const top = state.status?.runs?.find((r) => r.kind === 'mdm_sync');
@@ -213,14 +358,15 @@ function follow() {
 }
 
 async function load() {
-  state.status = await API.get('/api/integrations/status');
+  const [status] = await Promise.all([API.get('/api/integrations/status'), Date.now() - sk.loadedAt > 10000 ? loadSkipped().catch(showSkErr) : null]);
+  state.status = status;
   renderStatus(); I18N.apply(document.body);
   follow();
 }
 
 window.render = function () {
   document.getElementById('lang').innerHTML = I18N.toggleHTML();
-  renderStatus();
+  renderStatus(); renderSkipped();
 };
 
 (async () => {
@@ -234,6 +380,13 @@ window.render = function () {
   document.getElementById('kind').onchange = reset;
   document.getElementById('preview').onclick = () => upload(true);
   document.getElementById('commit').onclick = () => { if (confirm('Import these rows? This writes to the record.')) upload(false); };
+  document.getElementById('skPlace').onclick = () => decide('place');
+  document.getElementById('skLead').onclick = () => decide('lead');
+  document.getElementById('skLeave').onclick = () => decide('leave_out');
+  document.getElementById('skReopen').onclick = () => decide('reopen');
+  document.getElementById('skReason').onchange = (e) => { sk.reason = e.target.value; loadSkipped().catch(showSkErr); };
+  let qTimer = null;
+  document.getElementById('skQ').oninput = (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { sk.q = e.target.value.trim(); loadSkipped().catch(showSkErr); }, 300); };
   window.render();
   await load();
 })();

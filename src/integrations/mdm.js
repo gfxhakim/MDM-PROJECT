@@ -19,6 +19,7 @@ import { getLiveConfig } from '../config/service.js';
 import { createSellerRecord } from './sellers.js';
 import { countryFromPhone } from './phone.js';
 import { PATHS, client, isAccepted, isRejected, managersByEmail, marketCode, sellerMetrics, sellersWithOrderChanges, sellerToRow } from './mdm-api.js';
+import { markImported, rememberSkipped, watchedRefs } from './mdm-skipped.js';
 
 export const mdmConfig = () => ({
   url: (process.env.MDM_API_URL || 'https://api.mdm.express').replace(/\/$/, ''),
@@ -34,6 +35,7 @@ export async function mdmStatus(db = prisma) {
   return {
     pull: !!c.apiKey, events: !!c.webhookKey,
     lastSync: last ? { at: last.finishedAt ?? last.startedAt, status: last.status, summary: JSON.parse(last.summary) } : null,
+    skippedWaiting: await db.mdmSkipped.count({ where: { decision: null } }),
     detail: c.apiKey ? `Syncing merchants and sellers from ${c.url}.` : 'Not connected — running on imported or seeded data. Set MDM_API_KEY.',
   };
 }
@@ -72,6 +74,8 @@ async function upsertContext(db) {
  *     registration is older than MDM_LEAD_MAX_AGE_DAYS; rejected merchants are not brought in;
  *   • already here as a lead → linked to its platform id and left alone: a lead is activated
  *     through the onboarding flow, so the activation gate and handoff record still apply.
+ * A skip carries a `code` (phone | duplicate | rejected | market | stale | no_ref) so the pull can
+ * keep the seller aside for an Admin's decision (mdm-skipped.js).
  */
 export async function upsertFromMdm(row, ctx, db = prisma) {
   const ref = row.mdmRef ?? row.sellerRef ?? row.id ?? null;
@@ -83,34 +87,36 @@ export async function upsertFromMdm(row, ctx, db = prisma) {
     await applyMirror(existing.id, data, db);
     return { ok: true, action: 'updated', ref, sellerId: existing.id };
   }
+  const skip = (code, reason) => ({ ok: false, action: 'skipped', code, ref, reason });
   let phone;
-  try { phone = normalizePhone(row.phone); } catch { return { ok: false, action: 'skipped', ref, reason: 'No valid phone number.' }; }
-  const market = marketCode(row.country ?? row.market) || countryFromPhone(phone);
-  if (!MARKETS.includes(market)) {
-    const others = (row.countries ?? []).filter((c) => c && c !== market);
-    return { ok: false, action: 'skipped', ref, reason: `Market ${market || 'unknown'} is not Libya, Iraq or Lebanon${others.length ? ` (the platform also lists ${others.join(', ')} for this seller)` : ''}.` };
-  }
-  if (isRejected(row.joinStatus)) return { ok: false, action: 'skipped', ref, reason: `Rejected on the platform (${row.joinStatus}).` };
+  try { phone = normalizePhone(row.phone); } catch { return skip('phone', 'No valid phone number.'); }
   const accepted = isAccepted(row.joinStatus) || !!row.activatedAt;
-  const activatedAt = dateOr(row.activatedAt) ?? (accepted ? (dateOr(row.joinStatusDate) ?? dateOr(row.createdAt) ?? new Date()) : null);
+  // A merchant already here is reported as such whatever the platform says about its country.
   const contact = await db.contact.findUnique({ where: { phone } });
   if (contact) {
     if (ref && !contact.mdmRef) await db.contact.update({ where: { id: contact.id }, data: { mdmRef: String(ref) } });
-    return { ok: false, action: 'skipped', ref, reason: accepted
+    return skip('duplicate', accepted
       ? 'Already an onboarding lead here — activate it in the onboarding console so the handoff record is complete.'
-      : 'Already a contact here — linked to its platform id.' };
+      : 'Already a contact here — linked to its platform id.');
   }
+  if (isRejected(row.joinStatus)) return skip('rejected', `Rejected on the platform (${row.joinStatus}).`);
+  const market = marketCode(row.country ?? row.market) || countryFromPhone(phone);
+  if (!MARKETS.includes(market)) {
+    const others = (row.countries ?? []).filter((c) => c && c !== market);
+    return skip('market', `Market ${market || 'unknown'} is not Libya, Iraq or Lebanon${others.length ? ` (the platform also lists ${others.join(', ')} for this seller)` : ''}.`);
+  }
+  const activatedAt = dateOr(row.activatedAt) ?? (accepted ? (dateOr(row.joinStatusDate) ?? dateOr(row.createdAt) ?? new Date()) : null);
   if (!accepted) {
     const created = dateOr(row.createdAt);
     const maxAge = ctx.leadMaxAgeDays ?? mdmConfig().leadMaxAgeDays;
     if (created && Date.now() - created.getTime() > maxAge * DAY) {
-      return { ok: false, action: 'skipped', ref, reason: `Registered ${created.toISOString().slice(0, 10)}, more than ${maxAge} days ago and never accepted — not opened as a lead.` };
+      return skip('stale', `Registered ${created.toISOString().slice(0, 10)}, more than ${maxAge} days ago and never accepted — not opened as a lead.`);
     }
     const r = await registerMerchant({ phone, name: row.name, country: market, sourceUtm: row.utm ?? row.sourceUtm ?? 'mdm_platform' }, {}, db);
     if (ref) await db.contact.update({ where: { id: r.contact.id }, data: { mdmRef: String(ref) } });
     return { ok: true, action: 'lead_created', ref, contactId: r.contact.id, ticketId: r.ticket?.id ?? null };
   }
-  if (!ref) return { ok: false, action: 'skipped', ref, reason: 'An activated seller needs its MDM seller id (mdmRef).' };
+  if (!ref) return skip('no_ref', 'An activated seller needs its MDM seller id (mdmRef).');
   const { data: mirror, errors } = mirrorData(metrics);
   if (errors.length) return { ok: false, action: 'error', ref, reason: errors.join(' ') };
   // keep the platform's account manager when they are ours, cover the market and have room
@@ -219,9 +225,11 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
   const summary = { full: !last, total: null, fetched: 0, updated: 0, leadsCreated: 0, sellersCreated: 0, skippedCount: 0, errorCount: 0, warningCount: 0,
     reasons: { skipped: {}, errors: {}, warnings: {} }, live: { current: null, recent: [] } };
   const done = new Set();
+  // Sellers kept aside earlier (waiting, or left out): if one now imports by the normal rules, its row is closed.
+  const watched = await watchedRefs(db).catch(() => new Set());
   // The last 20 outcomes, newest first, so the page can show the import while it happens.
   const feed = (entry) => { summary.live.recent.unshift({ t: new Date().toISOString(), ...entry }); if (summary.live.recent.length > 20) summary.live.recent.length = 20; };
-  const record = (r, row, metrics = {}) => {
+  const record = async (r, row, metrics = {}) => {
     if (r.action === 'updated') summary.updated++;
     else if (r.action === 'lead_created') summary.leadsCreated++;
     else if (r.action === 'seller_created') summary.sellersCreated++;
@@ -232,6 +240,11 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
         : r.action === 'updated' ? figures(metrics)
           : r.action === 'lead_created' ? `onboarding lead${row?.country ? ` (${row.country})` : ''}`
             : (r.reason ?? '') });
+    // Every skipped seller is kept aside, with what the platform says, for an Admin's decision.
+    const ref = row?.mdmRef ?? r.ref;
+    if (!ref) return;
+    if (r.action === 'skipped') await rememberSkipped(row, r, { runId: run.id }, db).catch((err) => { summary.errorCount++; tally(summary.reasons.errors, ref, `skipped list: ${err.message}`); });
+    else if (r.ok && watched.has(ref)) await markImported(ref, r.action, {}, db).catch(() => {});
   };
   const warn = (ref, warnings) => { for (const w of warnings) { summary.warningCount++; tally(summary.reasons.warnings, ref, w); } };
   let savedAt = 0;
@@ -257,8 +270,8 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
           const m = await sellerMetrics(api, row.mdmRef, { now, countryId: row.countryId });
           metrics = m.metrics; warn(row.mdmRef, m.warnings);
         }
-        record(await upsertFromMdm({ ...row, metrics, managerEmail: platformManagers.get(row.accountManagerRef) ?? null }, ctx, db), row, metrics);
-      } catch (err) { record({ action: 'error', ref: row.mdmRef, reason: err.message }, row); }
+        await record(await upsertFromMdm({ ...row, metrics, managerEmail: platformManagers.get(row.accountManagerRef) ?? null }, ctx, db), row, metrics);
+      } catch (err) { await record({ action: 'error', ref: row.mdmRef, reason: err.message }, row); }
     }
     const refs = since ? [...await sellersWithOrderChanges(api, since, now)] : [];
     for (const ref of refs) {
@@ -272,10 +285,32 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
         const m = await sellerMetrics(api, ref, { now, countryId });
         warn(ref, m.warnings);
         const { data, errors } = mirrorData(m.metrics);
-        if (errors.length) { record({ action: 'error', ref, reason: errors.join(' ') }); continue; }
+        if (errors.length) { await record({ action: 'error', ref, reason: errors.join(' ') }); continue; }
         await applyMirror(seller.id, data, db);
-        record({ ok: true, action: 'updated', ref }, { mdmRef: ref }, m.metrics);
-      } catch (err) { record({ action: 'error', ref, reason: err.message }); }
+        await record({ ok: true, action: 'updated', ref }, { mdmRef: ref }, m.metrics);
+      } catch (err) { await record({ action: 'error', ref, reason: err.message }); }
+    }
+    // Sellers an Admin placed from the skipped list have no platform figures yet: read them now
+    // (at most 50 per run, oldest decision first; a full run has already read the rest above).
+    const placed = await db.mdmSkipped.findMany({ where: { decision: 'placed', figuresAt: null }, orderBy: { decidedAt: 'asc' }, take: 50 });
+    for (const h of placed) {
+      const ref = h.mdmRef;
+      const seller = await db.seller.findUnique({ where: { mdmRef: ref } });
+      if (!seller || done.has(ref)) { await db.mdmSkipped.update({ where: { id: h.id }, data: { figuresAt: new Date() } }); continue; }
+      done.add(ref);
+      await progress(ref);
+      try {
+        let platform = {};
+        try { platform = JSON.parse(h.platform); } catch { /* the snapshot is informative only */ }
+        const countryId = (platform.places ?? []).find((p) => p?.code === seller.market)?.id ?? h.countryId ?? null;
+        const m = await sellerMetrics(api, ref, { now, countryId });
+        warn(ref, m.warnings);
+        const { data, errors } = mirrorData(m.metrics);
+        if (errors.length) { await record({ action: 'error', ref, reason: errors.join(' ') }, { mdmRef: ref, name: h.name }); continue; }
+        await applyMirror(seller.id, data, db);
+        await db.mdmSkipped.update({ where: { id: h.id }, data: { figuresAt: new Date() } });
+        await record({ ok: true, action: 'updated', ref }, { mdmRef: ref, name: h.name }, m.metrics);
+      } catch (err) { await record({ action: 'error', ref, reason: err.message }, { mdmRef: ref, name: h.name }); }
     }
     summary.live.current = null;
     await save('completed');

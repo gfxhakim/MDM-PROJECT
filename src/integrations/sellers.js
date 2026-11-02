@@ -14,7 +14,8 @@ import { handover, pickAccountManager } from '../am/handover.js';
 export const WELCOME_WINDOW_DAYS = 14;
 
 /**
- * @param {object} p  phone, name, market, mdmRef, source, activatedAt, welcomeCallAt, mirror, managerId?, ownership?
+ * @param {object} p  phone, name, market, mdmRef, source, activatedAt, welcomeCallAt, mirror, managerId?, ownership?,
+ *                    lastSyncedAt? (null = no platform figures yet; the next MDM sync reads them)
  * @param {object} ctx  actorId, config (live values), managers (AM users, used to name a kept owner), legacy
  */
 export async function createSellerRecord(p, { actorId = null, config, managers = [], legacy = false }, db = prisma) {
@@ -22,7 +23,7 @@ export async function createSellerRecord(p, { actorId = null, config, managers =
   await db.conversation.create({ data: { contactId: contact.id } });
   const seller = await db.seller.create({
     data: { mdmRef: p.mdmRef, contactId: contact.id, market: p.market, joinStatus: 'accepted', activatedAt: p.activatedAt, welcomeCallAt: p.welcomeCallAt ?? null,
-      healthStale: true, lastSyncedAt: new Date(), ...p.mirror },
+      healthStale: true, lastSyncedAt: p.lastSyncedAt === undefined ? new Date() : p.lastSyncedAt, ...p.mirror },
   });
   let ownership = p.ownership ?? null;
   const recent = !p.welcomeCallAt && Date.now() - p.activatedAt.getTime() < WELCOME_WINDOW_DAYS * 86_400_000;
