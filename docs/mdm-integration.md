@@ -110,6 +110,30 @@ leads to the holding queue (rule r8 assigns them again by capacity) and each of 
 manager's sellers to the same-market, smallest-book manager, or leaves them unassigned with the
 Admin alerted; every change is audited.
 
+**Removing an account** (Accounts section, reason required, Admin only) does the same as switching
+it off, and also takes the account out of every list and sign-in; "Show removed" lists it again
+with **Put back**. A seller goes first to the manager MDM names for it, when that manager has an
+active account here. The last active Admin, and the Admin's own account, cannot be removed. The
+first production deploy with this change removes the demo agents and account managers
+(`salma`, `karim`, `noor`, `yassine`, `rania`, `omar` @mdm.local) once; the Admin, manager, shift
+lead and viewer accounts stay.
+
+**Deleting merchants here.** MDM's API has no delete for sellers or users, so a delete is local.
+An Admin ticks leads (All Leads), sellers (All Sellers) or skipped sellers (Integrations) after
+filtering, gives a reason and types the count. Each merchant is removed with its conversation,
+messages, tickets and tasks; a record of it stays in the **Deleted merchants** list on the
+Integrations page, and the sync leaves it out (matched by MDM id or phone). **Restore** lets the
+next Full resync, or the next change on MDM, bring it back as a new record. At most 200 per run;
+one audit entry per run lists every merchant. Billable template sends of a deleted merchant still
+count against this month's template budget.
+
+**Date ranges.** Every list (queue, All Leads, All Sellers, Portfolio, Skipped sellers, People on
+MDM, Deleted, Audit) takes a period: today, yesterday, last 7 or 30 days, this or last month, or a
+custom from/to. For leads and sellers the date is the day the merchant registered on MDM
+(`createdAt` of the MDM record), or the day it first reached us when it came from somewhere else.
+The API takes `from` and `to` (ISO dates) on `/api/admin/audit`, `/api/admin/deleted`,
+`/api/integrations/mdm/skipped` and `/api/integrations/mdm/staff`.
+
 **Each seller's figures:**
 
 - `POST /api/v2/orders/search` filtered by `sellerId` and `createdAt` gives:
