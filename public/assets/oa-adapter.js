@@ -114,7 +114,7 @@
     const q = t.qualification || {};
     const l = {
       id: t.id, ticket: '#' + t.id.slice(-6).toUpperCase(), contactCode: 'CT-' + c.id.slice(-5).toUpperCase(), conv: conv ? 'C-' + conv.id.slice(-5).toUpperCase() : '—',
-      name: c.name, ar: c.nameAr || '', country: COUNTRY[c.country] || c.country, city: '—', store: '—', phone: c.phone, email: '',
+      name: c.name, ar: c.nameAr || '', country: COUNTRY[c.country] || c.country, countryCode: c.country, city: '—', store: '—', phone: c.phone, email: '',
       source: h.source || c.sourceUtm || 'whatsapp', channel: conv?.channel === 'portal' ? 'portal' : 'whatsapp', utm: c.sourceUtm || '—',
       registeredAt: t.createdAt, enteredAt: c.mdmCreatedAt || c.createdAt || t.createdAt, ownerId: t.assigneeId, status: STATUS_MAP[t.status] || t.status, stage: stageOf(t),
       // The prototype's counter is the no-answer cadence; answered calls are not cadence attempts.
@@ -445,10 +445,37 @@
     closeModal();
     act(() => API.post(`/api/contacts/${l.contactId}/block`, { reason }), 'Contact blocked — reversible, audited');
   };
+  // A held lead: the platform's pick (OA 4.5 "Assign over capacity": most free minutes, agents on
+  // calls excluded) or a named agent (OA 4.5 "Reassign": Administrator / shift lead moves ownership).
   window.forceAssign = function (id) {
     const l = lead(id);
-    reasonModal('Assign over capacity', 'Assigns this held lead to the agent with the most free minutes, ignoring the capacity check. Agents on calls are still excluded.', 'Assign',
-      (reason) => act(() => API.post(`/api/oa/tickets/${l.id}/assign-over-capacity`, { reason }), 'Assigned over capacity'));
+    M = { choice: 'auto', ready: () => !!M.choice }; // eslint-disable-line no-global-assign
+    const agents = TEAM.map((t) => {
+      const a = availability(t.id);
+      const markets = JSON.parse(X.userById.get(t.id)?.markets || '[]');
+      const open = S.leads.filter((x) => x.ownerId === t.id && isOpen(x)).length;
+      const away = l.countryCode && markets.length && !markets.includes(l.countryCode);
+      return opt('choice', t.id, esc(t.name), [esc(t.countries.join(', ') || '—'), `${open} open now`, `${a.free} free min`, a.onCall ? 'on a call' : '', away ? 'not this lead\'s market' : '']
+        .filter(Boolean).map((x) => `<span>${x}</span>`).join(' · '));
+    }).join('');
+    openModal(`<div class="modal-h">${ic('users', 18)}<h3>Assign ${esc(l.name)}</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b">
+        ${opt('choice', 'auto', 'Agent with the most free minutes', 'Ignores the capacity check. Agents on calls are still excluded.')}
+        ${agents || `<div class="banner bn-amber tiny" style="margin-top:8px">${ic('alert', 14)}<div>No onboarding agent account yet. Import your commercials from <b>People on MDM</b> on the Integrations page, with the role Onboarding agent.</div></div>`}
+        <label class="fl" style="margin-top:12px">Reason — required, written to the audit log</label>
+        <textarea class="fi" id="m-note"></textarea></div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" id="modal-go" onclick="MDM.doAssign('${l.id}')">Assign</button></div>`);
+    pick('choice', 'auto');
+  };
+  X.doAssign = function (id) {
+    const l = lead(id); const to = M.choice;
+    const reason = ((document.getElementById('m-note') || {}).value || '').trim();
+    if (!reason) return toast('A written reason is required.', 'warn');
+    closeModal();
+    if (to === 'auto') return act(() => API.post(`/api/oa/tickets/${l.id}/assign-over-capacity`, { reason }), 'Assigned over capacity');
+    act(() => API.post(`/api/oa/tickets/${l.id}/reassign`, { toUserId: to, reason }), `Assigned to ${nameOf(to)}`);
   };
   window.assignAll = function () {
     const held = S.leads.filter((l) => !l.ownerId && isOpen(l));
@@ -667,13 +694,17 @@
   X.clearFilters = function () { for (const k of [...FILTER_KEYS, 'when', 'from', 'to']) S.filters[k] = ''; S.sel = []; render(); };
   X.toggleFilters = function () { S.filtersOpen = !S.filtersOpen; render(); };
   const lbl = (text, inner) => `<label class="fl" style="margin:0;display:flex;flex-direction:column;gap:4px">${text}${inner}</label>`;
+  // The period sits in the search bar itself, always in sight (the Admin's request, 2 Nov), not
+  // behind the funnel.
   function datePart() {
     const f = S.filters;
-    const opts = WHEN.map(([v, t]) => `<option value="${v}" ${f.when === v ? 'selected' : ''}>${t}</option>`).join('');
-    return lbl(FILTER_LABEL.when, `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setFilter('when',this.value)">${opts}</select>`)
+    const opts = WHEN.map(([v, t]) => `<option value="${v}" ${f.when === v ? 'selected' : ''}>${v ? t : 'Registered: any time'}</option>`).join('');
+    const box = 'class="fi" style="width:auto;padding:7px 9px;flex:0 0 auto"';
+    return `<select ${box} id="qwhen" title="Registered = the day the merchant registered on MDM" onchange="MDM.setFilter('when',this.value)"${dateSet() ? ' data-on="1"' : ''}>${opts}</select>`.replace('flex:0 0 auto"', `flex:0 0 auto${dateSet() ? ';border-color:#DC2626' : ''}"`)
       + (f.when === 'custom'
-        ? lbl('From', `<input class="fi" type="date" style="padding:5px 8px" value="${esc(f.from)}" ${f.to ? `max="${esc(f.to)}"` : ''} onchange="MDM.setFilter('from',this.value)">`)
-          + lbl('To', `<input class="fi" type="date" style="padding:5px 8px" value="${esc(f.to)}" ${f.from ? `min="${esc(f.from)}"` : ''} onchange="MDM.setFilter('to',this.value)">`)
+        ? `<input ${box} type="date" aria-label="From" value="${esc(f.from)}" ${f.to ? `max="${esc(f.to)}"` : ''} onchange="MDM.setFilter('from',this.value)">`
+          + `<span class="muted" style="flex:0 0 auto">–</span>`
+          + `<input ${box} type="date" aria-label="To" value="${esc(f.to)}" ${f.from ? `min="${esc(f.from)}"` : ''} onchange="MDM.setFilter('to',this.value)">`
         : '');
   }
   function filterPanel() {
@@ -681,7 +712,7 @@
     const sel = (k) => lbl(FILTER_LABEL[k], `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setFilter('${k}',this.value)"><option value="">All</option>
       ${o[k].map(([v, t]) => `<option value="${esc(v)}" ${f[k] === v ? 'selected' : ''} ${k === 'source' ? 'data-i18n="off"' : ''}>${esc(t)}</option>`).join('')}</select>`);
     return `<div class="card" id="qfilters" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;padding:12px 14px;margin:-4px 0 14px">
-      ${FILTER_KEYS.map(sel).join('')}${datePart()}<span style="flex:1"></span>
+      ${FILTER_KEYS.map(sel).join('')}<span style="flex:1"></span>
       <button class="btn btn-ghost btn-sm" onclick="MDM.clearFilters()" ${n ? '' : 'disabled title="No filter is set"'}>Clear filters</button>
       <div class="tiny muted" style="flex-basis:100%">Registered = the day the merchant registered on MDM (or wrote to us first, for a merchant who came in here).</div></div>`;
   }
@@ -695,6 +726,10 @@
     html = html.replace(`<button class="icon-btn red" onclick="toast('${toastText}')">`,
       `<button class="icon-btn red" title="${toastText}" onclick="MDM.toggleFilters()" style="position:relative${S.filtersOpen ? ';outline:3px solid rgba(220,38,38,.25)' : ''}">`
       + (n ? `<span class="num" style="position:absolute;top:-6px;inset-inline-end:-6px;background:#111;color:#fff;border-radius:999px;font-size:10px;font-weight:700;padding:1px 5px;line-height:14px">${n}</span>` : ''));
+    // the period control right after the funnel button
+    const at = html.indexOf('onclick="MDM.toggleFilters()"');
+    const end = at < 0 ? -1 : html.indexOf('</button>', at);
+    if (end >= 0) html = html.slice(0, end + 9) + datePart() + html.slice(end + 9);
     if (S.filtersOpen) html = html.replace('<div class="tbl-wrap">', filterPanel() + '<div class="tbl-wrap">');
     else if (n) html = html.replace('<div class="tbl-wrap">', filterLine() + '<div class="tbl-wrap">');
     return html;

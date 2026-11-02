@@ -1890,5 +1890,15 @@ Object.assign(window.I18N_AR, {
     ' — {n} of them are also sellers in a book, and their seller record goes too': ' — {n} منهم بائعون أيضًا في محفظة، ويُحذف سجل البائع كذلك',
     '{n} selected.': 'تم تحديد {n}.', '{n} deleted, {n} not deleted.': 'حُذف {n}، ولم يُحذف {n}.', '{n} restored, {n} not restored.': 'استُعيد {n}، ولم يُستعد {n}.',
     'Type {n} to confirm the delete.': 'اكتب {n} لتأكيد الحذف.', '{n} deleted': 'حُذف {n}',
+    '{n} open now': '{n} مفتوح الآن', '{n} free min': '{n} دقيقة متاحة',
+  });
+  add(window.I18N_AR, {
+    'Agent with the most free minutes': 'الوكيل صاحب أكثر دقائق متاحة',
+    'Ignores the capacity check. Agents on calls are still excluded.': 'يتجاوز فحص السعة. يبقى الوكلاء الذين في مكالمة مستبعدين.',
+    'on a call': 'في مكالمة', "not this lead's market": 'ليس سوق هذا العميل',
+    'No onboarding agent account yet. Import your commercials from': 'لا يوجد حساب وكيل تهيئة بعد. استورد مندوبيك من',
+    'on the Integrations page, with the role Onboarding agent.': 'في صفحة التكاملات، بدور وكيل تهيئة.',
+    'People on MDM': 'الأشخاص على MDM',
+    'Assign now': 'إسناد الآن', 'held for capacity': 'محتجز لعدم توفر السعة',
   });
 })();

@@ -68,6 +68,10 @@ test('pages: login, both consoles built from the reference files with the adapte
   // every list takes a period (quick choices or a custom range); the audit's Filter button works
   assert.match(adapter, /\['custom', 'Custom range'\]/);
   assert.ok(adapter.includes("toast('Filtered by actor, entity, kind and date range')"));
+  // the period sits in the search bar (always in sight); a held lead can go to a named agent (OA 4.5 Reassign)
+  assert.ok(adapter.includes('id="qwhen"'));
+  assert.match(adapter, /X\.doAssign = function/);
+  assert.ok(adapter.includes('/reassign`, { toUserId: to, reason }'));
   const oa = await page('/oa');
   assert.ok(oa.text.includes('AUDIT.slice(0,window.AUDIT_SHOW||14)'));
   const am = await (await fetch(`${app.base}/assets/am-adapter.js`)).text();
