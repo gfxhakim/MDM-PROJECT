@@ -167,12 +167,33 @@ export async function handleMdmEvent(evt, db = prisma) {
  */
 let running = null; // one sync at a time: a press of "Sync now" during the scheduled run is refused
 
-export async function syncSellers(opts = {}) {
+const refuse = () => {
   if (!mdmConfig().apiKey) throw Object.assign(new Error('The MDM platform connector is not configured (MDM_API_KEY).'), { status: 503, code: 'not_configured' });
   if (running) throw Object.assign(new Error('A sync is already running. Wait for it to finish — its progress shows under Recent runs.'), { status: 409, code: 'sync_running' });
+};
+
+export async function syncSellers(opts = {}) {
+  refuse();
   running = runSync(opts);
   try { return await running; } finally { running = null; }
 }
+
+/**
+ * Start a sync and return as soon as its run is recorded, so a page can follow it live under
+ * Recent runs (a full run over thousands of sellers takes long; the outcome is on the run itself).
+ */
+export async function startSync(opts = {}) {
+  refuse();
+  let started; const recorded = new Promise((r) => { started = r; });
+  const run = syncSellers({ ...opts, onStarted: started });
+  run.catch(() => { /* the failure is written on the run */ });
+  const runId = await Promise.race([recorded, run.then(() => null, () => null)]);
+  return { started: true, runId };
+}
+
+// One line of platform figures for the live feed.
+const figures = (m = {}) => [m.totalOrders != null ? `${m.totalOrders} orders` : null, m.deliveryRate != null ? `delivery ${m.deliveryRate}%` : null,
+  m.returnRate != null ? `returns ${m.returnRate}%` : null, m.wallet != null ? `wallet ${m.wallet}` : null].filter(Boolean).join(', ') || 'no figures yet';
 
 /** Runs left "running" by a restart can never finish: mark them as interrupted. */
 export async function closeInterruptedRuns(db = prisma) {
@@ -188,32 +209,45 @@ function tally(bucket, ref, reason) {
   if (ref && g.examples.length < 5) g.examples.push(ref);
 }
 
-async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = prisma, now = new Date() } = {}) {
+async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = prisma, now = new Date(), onStarted = null } = {}) {
   const c = mdmConfig();
   const last = full ? null : await db.integrationRun.findFirst({ where: { kind: 'mdm_sync', status: 'completed' }, orderBy: { startedAt: 'desc' } });
   const ctx = await upsertContext(db);
   const api = client({ url: c.url, apiKey: c.apiKey, paymentPassword: c.paymentPassword, fetchImpl });
   const run = await db.integrationRun.create({ data: { kind: 'mdm_sync', status: 'running', actorId } });
-  const summary = { full: !last, fetched: 0, updated: 0, leadsCreated: 0, sellersCreated: 0, skippedCount: 0, errorCount: 0, warningCount: 0, reasons: { skipped: {}, errors: {}, warnings: {} } };
+  onStarted?.(run.id);
+  const summary = { full: !last, total: null, fetched: 0, updated: 0, leadsCreated: 0, sellersCreated: 0, skippedCount: 0, errorCount: 0, warningCount: 0,
+    reasons: { skipped: {}, errors: {}, warnings: {} }, live: { current: null, recent: [] } };
   const done = new Set();
-  const record = (r, row) => {
+  // The last 20 outcomes, newest first, so the page can show the import while it happens.
+  const feed = (entry) => { summary.live.recent.unshift({ t: new Date().toISOString(), ...entry }); if (summary.live.recent.length > 20) summary.live.recent.length = 20; };
+  const record = (r, row, metrics = {}) => {
     if (r.action === 'updated') summary.updated++;
     else if (r.action === 'lead_created') summary.leadsCreated++;
     else if (r.action === 'seller_created') summary.sellersCreated++;
     else if (r.action === 'skipped') { summary.skippedCount++; tally(summary.reasons.skipped, r.ref ?? row?.phone, r.reason); }
     else { summary.errorCount++; tally(summary.reasons.errors, r.ref, r.reason); }
+    feed({ ref: r.ref ?? row?.mdmRef ?? null, name: row?.name ?? null, action: r.action,
+      note: r.action === 'seller_created' ? `${row?.country ?? ''} book · ${figures(metrics)}${r.ownership ? ` · ${r.ownership}` : ''}`
+        : r.action === 'updated' ? figures(metrics)
+          : r.action === 'lead_created' ? `onboarding lead${row?.country ? ` (${row.country})` : ''}`
+            : (r.reason ?? '') });
   };
   const warn = (ref, warnings) => { for (const w of warnings) { summary.warningCount++; tally(summary.reasons.warnings, ref, w); } };
-  const save = (status) => db.integrationRun.update({ where: { id: run.id }, data: { status, ...(status === 'running' ? {} : { finishedAt: new Date() }), summary: JSON.stringify(summary) } });
+  let savedAt = 0;
+  const save = (status) => { savedAt = Date.now(); return db.integrationRun.update({ where: { id: run.id }, data: { status, ...(status === 'running' ? {} : { finishedAt: new Date() }), summary: JSON.stringify(summary) } }); };
+  // Progress is written at most every 2 seconds, so the page can follow the run live.
+  const progress = (ref) => { summary.live.current = ref; return Date.now() - savedAt >= 2000 ? save('running') : null; };
   try {
     const since = last?.startedAt ?? null;
     // platform account managers by id → their email, to keep an existing owner who is one of ours
     const platformManagers = new Map([...(await managersByEmail(api).catch(() => new Map())).values()].map((m) => [m.trackingId, m.email]));
+    if (!since) summary.total = await api.count(PATHS.sellers).catch(() => null); // how far a full run is
     for await (const s of api.search(PATHS.sellers, { sortBy: { updatedAt: 'DESC' } })) {
       const row = sellerToRow(s);
       if (since && row.updatedAt && row.updatedAt < since) break; // newest first: the rest are unchanged
       summary.fetched++;
-      if (summary.fetched % 200 === 0) await save('running'); // progress shows on the page
+      await progress(row.mdmRef ?? null);
       if (!row.mdmRef || done.has(row.mdmRef)) continue;
       done.add(row.mdmRef);
       try {
@@ -223,8 +257,8 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
           const m = await sellerMetrics(api, row.mdmRef, { now, countryId: row.countryId });
           metrics = m.metrics; warn(row.mdmRef, m.warnings);
         }
-        record(await upsertFromMdm({ ...row, metrics, managerEmail: platformManagers.get(row.accountManagerRef) ?? null }, ctx, db), row);
-      } catch (err) { record({ action: 'error', ref: row.mdmRef, reason: err.message }); }
+        record(await upsertFromMdm({ ...row, metrics, managerEmail: platformManagers.get(row.accountManagerRef) ?? null }, ctx, db), row, metrics);
+      } catch (err) { record({ action: 'error', ref: row.mdmRef, reason: err.message }, row); }
     }
     const refs = since ? [...await sellersWithOrderChanges(api, since, now)] : [];
     for (const ref of refs) {
@@ -232,6 +266,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
       done.add(ref);
       const seller = await sellerFor({ mdmRef: ref }, db);
       if (!seller) continue; // not one of ours yet: it arrives with its seller record
+      await progress(ref);
       try {
         const countryId = c.paymentPassword ? sellerToRow((await api.call('GET', `/api/sellers/${encodeURIComponent(ref)}`)) ?? {}).countryId : null;
         const m = await sellerMetrics(api, ref, { now, countryId });
@@ -239,12 +274,14 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
         const { data, errors } = mirrorData(m.metrics);
         if (errors.length) { record({ action: 'error', ref, reason: errors.join(' ') }); continue; }
         await applyMirror(seller.id, data, db);
-        summary.updated++;
+        record({ ok: true, action: 'updated', ref }, { mdmRef: ref }, m.metrics);
       } catch (err) { record({ action: 'error', ref, reason: err.message }); }
     }
+    summary.live.current = null;
     await save('completed');
   } catch (err) {
     summary.errorCount++; tally(summary.reasons.errors, null, err.message);
+    summary.live.current = null;
     await save('failed');
     await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync_failed', reason: err.message }, db);
     throw err;

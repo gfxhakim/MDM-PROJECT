@@ -11,7 +11,7 @@ import { requirePermission } from '../auth/middleware.js';
 import { findContact } from '../core/contacts.js';
 import { prisma } from '../db.js';
 import { handleWebhook, verifySignature, whatsappConfig, whatsappStatus } from '../integrations/whatsapp.js';
-import { handleMdmEvent, mdmConfig, mdmStatus, syncSellers } from '../integrations/mdm.js';
+import { handleMdmEvent, mdmConfig, mdmStatus, startSync } from '../integrations/mdm.js';
 import { dial, handleYeastarEvent, yeastarConfig, yeastarStatus } from '../integrations/yeastar.js';
 import { runImport } from '../integrations/importer.js';
 import { OPTIONAL, optionalOn } from '../integrations/optional.js';
@@ -71,8 +71,9 @@ integrationsRouter.get('/status', requirePermission('integrations.manage'), ah(a
 }));
 
 // { full: true } re-reads every record from the beginning (the first sync always does).
+// Answers as soon as the run is recorded; the page follows its progress under Recent runs.
 integrationsRouter.post('/mdm/sync', requirePermission('integrations.manage'), ah(async (req, res) => {
-  res.json(await syncSellers({ actorId: req.user.id, full: req.body?.full === true }));
+  res.status(202).json(await startSync({ actorId: req.user.id, full: req.body?.full === true }));
 }));
 
 integrationsRouter.post('/mdm/push', requirePermission('integrations.manage'), ah(async (_req, res) => {
