@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { useTestDatabase } from './helpers/db.js';
 import { startApp } from './helpers/http.js';
-import { fakeMdm, mdmSeller } from './helpers/fake-mdm.js';
+import { fakeMdm, mdmSeller, mdmUser } from './helpers/fake-mdm.js';
 
 useTestDatabase('integrations');
 process.env.JWT_SECRET = 'test-secret';
@@ -18,6 +18,7 @@ const { createApp } = await import('../src/app.js');
 const cfg = await import('../src/config/service.js');
 const { hashPassword } = await import('../src/auth/service.js');
 const { syncSellers, startSync } = await import('../src/integrations/mdm.js');
+const { login } = await import('../src/auth/service.js');
 const { ratesFromReporting } = await import('../src/integrations/mdm-api.js');
 const { parseCsv } = await import('../src/integrations/importer.js');
 
@@ -51,7 +52,10 @@ before(async () => {
   app = await startApp(createApp);
 });
 beforeEach(async () => {
-  for (const m of ['notification', 'eventLog', 'message', 'ticket', 'seller', 'conversation', 'contact', 'integrationRun', 'mdmSkipped']) await prisma[m].deleteMany();
+  for (const m of ['notification', 'eventLog', 'message', 'ticket', 'seller', 'conversation', 'contact', 'integrationRun', 'mdmSkipped', 'mdmStaff', 'mdmCountry']) await prisma[m].deleteMany();
+  await prisma.user.deleteMany({ where: { mdmRef: { not: null }, NOT: { email: { endsWith: '@t.local' } } } });
+  // the people test links and renames the fixture users from MDM: put them back
+  for (const u of Object.values(U)) await prisma.user.update({ where: { id: u.id }, data: { name: u.name, markets: u.markets, active: true, mdmRef: null, mdmRole: null, mdmScope: null, mdmUsernames: '[]', mdmManagerRef: null, mdmSyncedAt: null, phones: '[]' } });
 });
 after(async () => { app.close(); await prisma.$disconnect(); });
 
@@ -341,6 +345,148 @@ test('skipped sellers are kept aside with the platform data; the Admin places th
   const status = (await app.call('GET', '/api/integrations/status', { token: admin })).body;
   assert.equal(status.mdm.skippedWaiting, 1, 'only the rejected seller, put back on the list, is still waiting');
   assert.match(await (await fetch(`${app.base}/integrations`)).text(), /Skipped sellers/);
+});
+
+test('people on MDM: every platform user kept aside; imported with a role; their leads, sellers and join history come with them; MDM sign-in; switching off', async () => {
+  const person = (id, first, last) => ({ trackingId: id, firstName: first, lastName: last, phones: [], pictureId: null });
+  const karim = person('U-KARIM', 'Karim', 'Haddad');
+  const history = [
+    { status: 'not-answer', notes: 'rang twice', date: '2026-10-20T09:00:00Z', meta: null, responsible: karim },
+    { status: 'followup', notes: 'call back Monday', date: '2026-10-22T09:00:00Z', meta: null, responsible: karim },
+  ];
+  const recent = new Date(Date.now() - 3 * 86_400_000).toISOString();
+  const existing = await seller('MDM-S-X', '+218915550090', U.yassine.id);
+  const mdm = fakeMdm({
+    users: [
+      mdmUser('U-KARIM', 'karim@mdm.test', { firstName: 'Karim', lastName: 'Haddad', role: 'commercial-agent', scope: 'commercial', countries: ['c-ly'], phones: ['+218911111111'], usernames: ['karim@mdm.test', 'karim'] }),
+      mdmUser('U-NOOR', 'noor@mdm.test', { firstName: 'Noor', lastName: 'Al-Saadi', role: 'account-manager', scope: 'commercial', countries: ['LBY', 'IRQ'] }),
+      mdmUser('U-RANIA', 'rania@t.local', { firstName: 'Rania', lastName: 'Kassem', role: 'account-manager', scope: 'commercial', countries: ['c-ly'] }), // same email as an account here
+      mdmUser('U-NOMAIL', '', { firstName: 'No', lastName: 'Email', role: 'commercial-agent', scope: 'commercial', usernames: ['+218922222222'], email: '' }),
+      mdmUser('U-WH', 'wh@mdm.test', { firstName: 'Ware', lastName: 'House', role: 'warehouse-agent', scope: 'logistics', countries: [], restricted: true }),
+    ],
+    passwords: { 'karim@mdm.test': 'mdm-secret', karim: 'mdm-secret' },
+    managers: [{ trackingId: 'AM-N', email: 'noor@mdm.test', countryId: 'c-ly', country: { id: 'c-ly', name: 'Libya', code: 'LBY' } }, { trackingId: 'AM-R', email: 'rania@t.local', countryId: 'c-ly', country: { id: 'c-ly', name: 'Libya', code: 'LBY' } }],
+    sellers: [
+      // a merchant still joining: Karim is responsible on MDM, the status is "followup", two join marks
+      mdmSeller('L-1', '+218915550091', { joinStatus: 'followup', createdAt: '2026-10-15T10:00:00Z', joinStatusDate: '2026-10-22T09:00:00Z', joinStatusResponsible: karim, joinStatusHistory: history, updatedAt: '2026-10-22T09:00:00Z' }),
+      // not answered on MDM, responsible has no email on MDM (cannot be imported)
+      mdmSeller('L-2', '+218915550092', { joinStatus: 'not-answer', createdAt: recent, joinStatusResponsible: person('U-NOMAIL', 'No', 'Email'), joinStatusHistory: [{ status: 'not-answer', notes: null, date: recent, meta: null, responsible: person('U-NOMAIL', 'No', 'Email') }] }),
+      // sellers: S-1 with Rania (ours by email) on MDM, S-2 with Noor (not here yet), the existing one with Noor
+      mdmSeller('S-1', '+218915550093', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', accountManager: { trackingId: 'AM-R', firstName: 'Rania', lastName: 'Kassem' } }),
+      mdmSeller('S-2', '+218915550094', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', accountManager: { trackingId: 'AM-N', firstName: 'Noor', lastName: 'Al-Saadi' } }),
+      mdmSeller('MDM-S-X', '+218915550090', { joinStatus: 'accepted', accountManager: { trackingId: 'AM-N', firstName: 'Noor', lastName: 'Al-Saadi' } }),
+    ],
+    orders: {},
+  });
+  const run = () => { process.env.MDM_API_KEY = 'k'; return syncSellers({ full: true, actorId: U.admin.id, fetchImpl: mdm.fetchImpl }).finally(() => { delete process.env.MDM_API_KEY; }); };
+  let s = await run();
+  assert.equal(s.staff.read, 5); assert.equal(s.staff.error, null);
+  assert.equal(s.leadsCreated, 2); assert.equal(s.sellersCreated, 2); assert.equal(s.updated, 1);
+
+  // — the people: kept aside, markets read from MDM's codes and ids, the same-email account linked
+  const admin = await tok('admin');
+  assert.equal((await app.call('GET', '/api/integrations/mdm/staff', { token: await tok('manager') })).status, 403);
+  let list = (await app.call('GET', '/api/integrations/mdm/staff?decision=all', { token: admin })).body;
+  assert.equal(list.items.length, 5); assert.deepEqual([list.counts.waiting, list.counts.imported, list.counts.left_out, list.counts.restricted], [4, 1, 0, 1]);
+  assert.deepEqual(list.scopes, ['commercial', 'logistics']);
+  const by = (ref) => list.items.find((i) => i.mdmRef === ref);
+  assert.deepEqual(by('U-NOOR').markets, ['LY', 'IQ']); assert.equal(by('U-NOOR').suggestedRole, 'ACCOUNT_MANAGER'); assert.equal(by('U-NOOR').managerRef, 'AM-N');
+  assert.deepEqual(by('U-KARIM').markets, ['LY'], 'the country id c-ly is learnt from the sellers of the run'); assert.equal(by('U-KARIM').suggestedRole, 'OA_AGENT');
+  assert.equal(by('U-KARIM').onMdm.leads, 1); assert.equal(by('U-NOOR').onMdm.sellers, 2);
+  assert.equal(by('U-NOMAIL').blocked, 'No email on MDM — an account here needs one.');
+  assert.equal(by('U-WH').restricted, true);
+  assert.equal(by('U-RANIA').decision, 'imported'); assert.equal(by('U-RANIA').user.id, U.rania.id); assert.equal(by('U-RANIA').outcome.linked, true);
+  const rania = await prisma.user.findUnique({ where: { id: U.rania.id } });
+  assert.equal(rania.mdmRef, 'U-RANIA'); assert.equal(rania.mdmManagerRef, 'AM-R'); assert.equal(rania.mdmScope, 'commercial');
+
+  // — the merchants' records came with them (OA 3.5): original dates, MDM's status by meaning, counters at 0, the join history as legacy lines
+  const l1 = await prisma.ticket.findFirst({ where: { contact: { mdmRef: 'L-1' } }, include: { contact: true } });
+  assert.equal(l1.createdAt.toISOString(), '2026-10-15T10:00:00.000Z'); assert.equal(l1.contact.createdAt.toISOString(), '2026-10-15T10:00:00.000Z');
+  assert.equal(l1.status, 'prequalified'); assert.equal(l1.attemptNo, 0); assert.equal(l1.contact.mdmResponsibleRef, 'U-KARIM');
+  assert.ok([U.salma.id, null].includes(l1.assigneeId), 'Karim is not here yet: capture r1 picked the agent by capacity, or held the lead outside business hours');
+  const lines = await prisma.message.findMany({ where: { conversation: { contactId: l1.contactId }, legacy: true }, orderBy: { createdAt: 'asc' } });
+  assert.deepEqual(lines.map((m) => [m.kind, m.createdAt.toISOString(), m.body]), [
+    ['system', '2026-10-20T09:00:00.000Z', 'MDM · not-answer — rang twice · Karim Haddad'],
+    ['system', '2026-10-22T09:00:00.000Z', 'MDM · followup — call back Monday · Karim Haddad'],
+  ]);
+  const l2 = await prisma.ticket.findFirst({ where: { contact: { mdmRef: 'L-2' } } });
+  assert.equal(l2.status, 'failed_to_contact'); assert.equal(l2.attemptNo, 0);
+  const s1 = await prisma.seller.findUnique({ where: { mdmRef: 'S-1' } }); const s2 = await prisma.seller.findUnique({ where: { mdmRef: 'S-2' } });
+  assert.equal(s1.assignedAccountManagerId, U.rania.id, "MDM's account manager, one of ours by email, keeps the seller"); assert.equal(s1.mdmManagerRef, 'AM-R');
+  assert.equal(s2.assignedAccountManagerId, U.yassine.id, 'Noor is not here yet: AM 3.2 picked the smallest book'); assert.equal(s2.mdmManagerRef, 'AM-N');
+  assert.equal((await prisma.seller.findUnique({ where: { id: existing.id } })).mdmManagerRef, 'AM-N');
+
+  // — the Admin imports: a role is required; no email → refused per item; a restricted person comes in switched off
+  const decide = (body) => app.call('POST', '/api/integrations/mdm/staff/decide', { token: admin, body });
+  let r = await decide({ ids: [by('U-KARIM').id], action: 'import' });
+  assert.equal(r.status, 400); assert.match(r.body.error.message, /Choose the role/);
+  r = await decide({ ids: [by('U-KARIM').id, by('U-NOMAIL').id], action: 'import', role: 'OA_AGENT' });
+  assert.equal(r.status, 400); assert.match(r.body.error.message, /written note/);
+  r = await decide({ ids: [by('U-KARIM').id, by('U-NOMAIL').id, by('U-WH').id], action: 'import', role: 'OA_AGENT', note: 'the onboarding team' });
+  assert.equal(r.status, 200); assert.deepEqual([r.body.done, r.body.failed], [1, 2]);
+  assert.match(r.body.results[1].reason, /^No email on MDM/);
+  assert.match(r.body.results[2].reason, /^No market in Libya, Iraq or Lebanon on MDM/, 'an agent needs a market; the Admin can choose one');
+  assert.deepEqual(r.body.aligned, { leads: 1, sellers: 0 });
+  r = await decide({ ids: [by('U-WH').id], action: 'import', role: 'READ_ONLY' });
+  assert.deepEqual([r.body.done, r.body.failed], [1, 0]);
+  const karimUser = await prisma.user.findUnique({ where: { email: 'karim@mdm.test' } });
+  assert.equal(karimUser.role, 'OA_AGENT'); assert.deepEqual(JSON.parse(karimUser.markets), ['LY']); assert.equal(karimUser.passwordHash, ''); assert.equal(karimUser.mdmRef, 'U-KARIM');
+  assert.deepEqual(JSON.parse(karimUser.mdmUsernames), ['karim@mdm.test', 'karim']); assert.equal(karimUser.active, true);
+  const whUser = await prisma.user.findUnique({ where: { email: 'wh@mdm.test' } });
+  assert.equal(whUser.active, false, 'restricted on MDM: switched off here'); assert.deepEqual(JSON.parse(whUser.markets), []);
+  // their data came with them: L-1 is Karim's now (an audited assignment, a line in the conversation); L-2 stays where capacity put it
+  assert.equal((await prisma.ticket.findUnique({ where: { id: l1.id } })).assigneeId, karimUser.id);
+  assert.ok(await prisma.eventLog.findFirst({ where: { entityType: 'ticket', entityId: l1.id, action: 'ticket.assigned', reason: { contains: 'Responsible agent on the MDM platform' } } }));
+  assert.equal((await prisma.ticket.findUnique({ where: { id: l2.id } })).assigneeId, l2.assigneeId, 'L-2 stays where capture put it');
+  assert.equal(await prisma.eventLog.count({ where: { action: 'mdm.staff_decided' } }), 2, 'one audit entry per decision run');
+  assert.equal(await prisma.eventLog.count({ where: { action: 'mdm.ownership_aligned' } }), 1);
+  r = await decide({ ids: [by('U-NOOR').id], action: 'import', role: 'ACCOUNT_MANAGER' });
+  assert.deepEqual([r.body.done, r.body.aligned.sellers], [1, 2], 'S-2 and the seller already here move to Noor; S-1 stays with Rania');
+  const noor = await prisma.user.findUnique({ where: { email: 'noor@mdm.test' } });
+  assert.equal(noor.mdmManagerRef, 'AM-N'); assert.deepEqual(JSON.parse(noor.markets), ['LY', 'IQ']);
+  assert.equal((await prisma.seller.findUnique({ where: { mdmRef: 'S-2' } })).assignedAccountManagerId, noor.id);
+  assert.equal((await prisma.seller.findUnique({ where: { id: existing.id } })).assignedAccountManagerId, noor.id);
+  assert.equal((await prisma.seller.findUnique({ where: { mdmRef: 'S-1' } })).assignedAccountManagerId, U.rania.id);
+  const moved = await prisma.eventLog.findFirst({ where: { entityType: 'seller', entityId: s2.id, action: 'seller.reassigned' } });
+  assert.equal(JSON.parse(moved.after).fromPlatform, true, "MDM's own assignment is not sent back by the write-back");
+  r = await decide({ ids: [by('U-NOMAIL').id], action: 'leave_out', note: 'no email yet' });
+  assert.equal(r.body.done, 1);
+  list = (await app.call('GET', '/api/integrations/mdm/staff', { token: admin })).body;
+  assert.equal(list.items.length, 0, 'nobody waiting'); assert.equal(list.counts.left_out, 1);
+
+  // — sign-in: with the MDM password (checked by MDM, the profile must be the imported user), by email or MDM username; a wrong one is refused
+  const ok = await login('karim@mdm.test', 'mdm-secret', prisma, { fetchImpl: mdm.fetchImpl });
+  assert.equal(ok.user.id, karimUser.id); assert.equal(ok.user.role, 'OA_AGENT');
+  assert.equal((await login('karim', 'mdm-secret', prisma, { fetchImpl: mdm.fetchImpl })).user.id, karimUser.id);
+  await assert.rejects(login('karim@mdm.test', 'wrong', prisma, { fetchImpl: mdm.fetchImpl }), (e) => e.status === 401);
+  await assert.rejects(login('karim@mdm.test', 'mdm-secret', prisma, { fetchImpl: async () => { throw new Error('platform down'); } }), /platform down/);
+  // a password set by the Admin works here without MDM
+  r = await app.call('POST', `/api/admin/users/${karimUser.id}/password`, { token: admin, body: { password: 'short' } });
+  assert.equal(r.status, 400);
+  r = await app.call('POST', `/api/admin/users/${karimUser.id}/password`, { token: admin, body: { password: 'local-pass-1' } });
+  assert.equal(r.status, 200); assert.equal(r.body.mdmSignIn, true);
+  assert.equal((await app.call('POST', '/api/auth/login', { body: { email: 'karim@mdm.test', password: 'local-pass-1' } })).status, 200);
+  const pw = await prisma.eventLog.findFirst({ where: { action: 'user.password_set' } });
+  assert.ok(pw && !JSON.stringify(pw).includes('local-pass-1'), 'the password is never logged');
+  const accounts = (await app.call('GET', '/api/admin/users', { token: admin })).body;
+  const kAcc = accounts.find((u) => u.id === karimUser.id);
+  assert.deepEqual([kAcc.source, kAcc.hasPassword, kAcc.openLeads], ['mdm', true, 1]);
+  assert.equal(accounts.find((u) => u.id === noor.id).bookSize, 2);
+
+  // — switching off: Karim's lead goes to the holding queue; the next sync gives it back once he is on again
+  r = await app.call('POST', `/api/admin/users/${karimUser.id}/active`, { token: admin, body: { active: false, reason: 'on leave' } });
+  assert.equal(r.status, 200); assert.equal(r.body.leadsHeld, 1);
+  let held = await prisma.ticket.findUnique({ where: { id: l1.id } });
+  assert.equal(held.assigneeId, null); assert.equal(held.holdReason, 'agent deactivated');
+  assert.equal((await app.call('POST', '/api/auth/login', { body: { email: 'karim@mdm.test', password: 'local-pass-1' } })).status, 401);
+  r = await app.call('POST', `/api/admin/users/${karimUser.id}/active`, { token: admin, body: { active: true, reason: 'back' } });
+  assert.equal(r.status, 200);
+  // the same run again: nothing doubled, people seen twice, the held lead back with MDM's responsible agent
+  s = await run();
+  assert.equal(await prisma.mdmStaff.count(), 5); assert.equal((await prisma.mdmStaff.findUnique({ where: { mdmRef: 'U-KARIM' } })).seenCount, 2);
+  assert.equal(await prisma.user.count({ where: { mdmRef: { not: null } } }), 4);
+  assert.equal(await prisma.message.count({ where: { conversation: { contactId: l1.contactId }, legacy: true } }), 2);
+  assert.equal((await prisma.ticket.findUnique({ where: { id: l1.id } })).assigneeId, karimUser.id, 'the held lead is back with the agent MDM holds responsible');
 });
 
 test("MDM reporting rows → rates: counts summed over the seller's markets, no orders → no rates, impossible counts → a problem", () => {

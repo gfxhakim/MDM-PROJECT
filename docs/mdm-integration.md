@@ -64,6 +64,52 @@ the owner's request of 2 Nov 2026 to keep every skipped seller aside and decide 
 actions are the spec's own mechanisms (AM 3.2, r1, capture r1, OA 13.2 bulk guardrails, one audit
 entry).
 
+**People on MDM (staff).** Every run first reads the platform's users (`POST /api/users/search`,
+or the older `GET /api/users` when that one is refused) and keeps them aside on the Integrations
+page: name, email, phones, MDM usernames, MDM role and group (scope), countries (turned into the
+markets here from the country ids learnt from the sellers and the account-manager list), restriction
+and last MDM sign-in. Nothing is created by itself: the Admin **imports** each person, alone or in
+bulk (200 at most, a written note for a bulk run), with the role they have here (onboarding agent,
+account manager, shift lead, manager, read-only, administrator) and, when MDM lists none of Libya,
+Iraq or Lebanon for them, the markets; or **leaves them out** (reversible). A person with no email
+on MDM cannot be imported (an account here needs one). An account already here with the same email
+is linked, not duplicated. A person restricted on MDM is imported switched off, and a later
+restriction switches the account off here (and back on when MDM lifts it). One audit entry per
+decision run with every item's result (`mdm.staff_decided`). If MDM refuses the users call, the run
+goes on with the sellers and the status card says so, so the API key's rights can be extended.
+
+**Their data comes with them** — the spec's migration rules (OA 3.5) applied to the platform:
+
+- **The responsible agent.** MDM's `joinStatusResponsible` is kept on the contact. A lead whose
+  responsible agent is one of ours (imported from MDM) is assigned to them — when the lead is
+  created, and for leads already here as soon as the person is imported (`alignOwnership`, also at
+  the end of every run). A lead already held by another platform person is left alone (a move made
+  here was recorded on MDM).
+- **The account manager.** MDM's `accountManager` is kept on the seller (`mdmManagerRef`). A new
+  seller stays with MDM's account manager when they are one of ours (imported, or the same email);
+  sellers already here move to them once they are imported. Two platform people: no move. **This
+  keeps MDM's book as it is, past the book ceiling if MDM's book is larger** — the ceiling governs
+  the rule's own picks (AM 3.2), not the platform's record; the Operations screen shows the gap.
+  The write-back does not send MDM its own assignment back (`fromPlatform`).
+- **The join history.** Every mark MDM recorded (`joinStatusHistory`: not answered, follow-up,
+  missing documents, accepted … with notes, date and who) is a read-only `legacy` system line in
+  the conversation, dated as on MDM and credited to the imported user when they are here. One line
+  per mark, however many runs.
+- **Original dates and statuses.** A lead's contact and ticket carry MDM's registration date;
+  MDM's join status is mapped by meaning (not answered → Failed to contact, follow-up →
+  Pre-qualified, missing documents → Pre-qualified at the documents stage, anything else →
+  Pre-qualified with a note); **cadence counters start at 0** and the first due date is at the
+  import, as the spec requires for migrated leads.
+
+**Sign-in for imported staff.** With their MDM username (or email) and MDM password: the app calls
+MDM's `POST /api/auth/login/user`, then `GET /api/auth/me`, and accepts only when the profile is
+the same platform user the account was imported from. No API key is involved in that call. An
+Admin can also set a password here (Accounts section, at least 8 characters, never logged); then
+both ways work. Switching an account off (Accounts section, reason required) sends an agent's open
+leads to the holding queue (rule r8 assigns them again by capacity) and each of an account
+manager's sellers to the same-market, smallest-book manager, or leaves them unassigned with the
+Admin alerted; every change is audited.
+
 **Each seller's figures:**
 
 - `POST /api/v2/orders/search` filtered by `sellerId` and `createdAt` gives:

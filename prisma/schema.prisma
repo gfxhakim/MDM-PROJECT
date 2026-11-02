@@ -21,20 +21,29 @@ model User {
   passwordHash   String
   role           String
   markets        String    @default("[]") // JSON array of country codes (skills / AM market)
-  businessNumber String?   // AM: the WhatsApp business number the book runs on
+  businessNumber String? // AM: the WhatsApp business number the book runs on
   shiftMinutes   Int       @default(480)
   active         Boolean   @default(true)
   onCall         Boolean   @default(false) // Yeastar presence; manual toggle until PBX wired
   extension      String?   @unique // Yeastar extension, maps PBX call events to the agent
   lastAssignedAt DateTime? // AM assignment tie-break
+  // Staff imported from the MDM platform (Users on MDM): their user id there, what MDM says they
+  // are, and their MDM usernames (sign-in checks the password with MDM, mdm-auth.js).
+  mdmRef         String?   @unique
+  mdmRole        String?
+  mdmScope       String?
+  mdmUsernames   String    @default("[]") // JSON array
+  mdmManagerRef  String? // the account-manager record on MDM with the same email (sellers point at it)
+  phones         String    @default("[]") // JSON array, as MDM lists them
+  mdmSyncedAt    DateTime?
   createdAt      DateTime  @default(now())
 
-  contactsOwned  Contact[] @relation("ContactOwner")
-  ticketsAssigned Ticket[] @relation("TicketAssignee")
-  sellersManaged Seller[]  @relation("SellerAM")
-  notifications  Notification[]
-  messages       Message[]
-  elevations     RoleElevation[] @relation("ElevatedUser")
+  contactsOwned   Contact[]       @relation("ContactOwner")
+  ticketsAssigned Ticket[]        @relation("TicketAssignee")
+  sellersManaged  Seller[]        @relation("SellerAM")
+  notifications   Notification[]
+  messages        Message[]
+  elevations      RoleElevation[] @relation("ElevatedUser")
 }
 
 // Temporary elevation (OA 9.3): cover for leave is time-bound. While active, the user acts as
@@ -57,27 +66,29 @@ model RoleElevation {
 // ───────────────────────── Platform core ─────────────────────────
 // contactType: merchant (pre-activation) | seller (activated) | end_customer | internal
 model Contact {
-  id           String    @id @default(cuid())
-  name         String
-  nameAr       String?
-  phone        String    @unique // E.164
-  country      String    // LY | IQ | LB ...
-  contactType  String    @default("merchant")
-  ownerAgentId String?
-  ownerAgent   User?     @relation("ContactOwner", fields: [ownerAgentId], references: [id])
-  optedOut     Boolean   @default(false)
-  blocked      Boolean   @default(false)
-  blockReason  String?
-  sourceUtm    String?   // channel + UTM / affiliate tag, immutable after creation
-  legacy       Boolean   @default(false) // imported from Zoho
-  mdmRef       String?   // the merchant's seller id on the MDM platform (trackingId), once known
-  createdAt    DateTime  @default(now())
+  id                String   @id @default(cuid())
+  name              String
+  nameAr            String?
+  phone             String   @unique // E.164
+  country           String // LY | IQ | LB ...
+  contactType       String   @default("merchant")
+  ownerAgentId      String?
+  ownerAgent        User?    @relation("ContactOwner", fields: [ownerAgentId], references: [id])
+  optedOut          Boolean  @default(false)
+  blocked           Boolean  @default(false)
+  blockReason       String?
+  sourceUtm         String? // channel + UTM / affiliate tag, immutable after creation
+  legacy            Boolean  @default(false) // imported from Zoho
+  mdmRef            String? // the merchant's seller id on the MDM platform (trackingId), once known
+  mdmResponsibleRef String? // the MDM user responsible for the join (Seller.joinStatusResponsible); the lead's owner once imported
+  createdAt         DateTime @default(now())
 
   conversations Conversation[]
   tickets       Ticket[]
   seller        Seller?
 
   @@index([mdmRef])
+  @@index([mdmResponsibleRef])
 }
 
 model Conversation {
@@ -102,20 +113,20 @@ model Conversation {
 // direction: in | out | internal ; kind: text | template | call_event | note | system
 // internal = notes and system lines, never shown to the contact
 model Message {
-  id             String   @id @default(cuid())
+  id             String       @id @default(cuid())
   conversationId String
   conversation   Conversation @relation(fields: [conversationId], references: [id])
   direction      String
-  kind           String   @default("text")
+  kind           String       @default("text")
   body           String
   templateKey    String?
-  billable       Boolean  @default(false)
+  billable       Boolean      @default(false)
   authorUserId   String?
-  author         User?    @relation(fields: [authorUserId], references: [id])
-  legacy         Boolean  @default(false)
-  externalId     String?  @unique // provider message id (WhatsApp wamid, Yeastar call id) — dedupes webhooks
-  deliveryStatus String?  // queued | sent | delivered | read | failed | not_sent (no transport configured)
-  createdAt      DateTime @default(now())
+  author         User?        @relation(fields: [authorUserId], references: [id])
+  legacy         Boolean      @default(false)
+  externalId     String?      @unique // provider message id (WhatsApp wamid, Yeastar call id) — dedupes webhooks
+  deliveryStatus String? // queued | sent | delivered | read | failed | not_sent (no transport configured)
+  createdAt      DateTime     @default(now())
 
   @@index([conversationId, createdAt])
 }
@@ -139,34 +150,34 @@ model Ticket {
   closedAt   DateTime?
 
   // ── onboarding_task fields (spec OA 2.3) ──
-  stage          String?
-  attemptNo      Int      @default(0)
-  nextAttemptAt  DateTime?
-  followupNo     Int      @default(0)
-  nextFollowupAt DateTime?
-  cadenceReset   Boolean  @default(false)
-  holdReason     String?  // never null while unassigned
-  heldAt         DateTime? // when it entered the holding queue (r8 escalation clock)
-  stalledReason  String?  // written reason required once open past stalled_day (OA 5.5)
-  tags           String   @default("[]") // JSON array, e.g. oa_cold_no_answer
-  walkthroughAt  DateTime?
+  stage           String?
+  attemptNo       Int       @default(0)
+  nextAttemptAt   DateTime?
+  followupNo      Int       @default(0)
+  nextFollowupAt  DateTime?
+  cadenceReset    Boolean   @default(false)
+  holdReason      String? // never null while unassigned
+  heldAt          DateTime? // when it entered the holding queue (r8 escalation clock)
+  stalledReason   String? // written reason required once open past stalled_day (OA 5.5)
+  tags            String    @default("[]") // JSON array, e.g. oa_cold_no_answer
+  walkthroughAt   DateTime?
   walkthroughMode String? // phone | meet | whatsapp_video
-  qualification  String   @default("{}") // JSON: 5 booleans (OA 8.1)
-  handoffRecord  String   @default("{}") // JSON: 8 fields (OA 2.6)
-  firstOrderAt   DateTime? // written by order-domain event only
+  qualification   String    @default("{}") // JSON: 5 booleans (OA 8.1)
+  handoffRecord   String    @default("{}") // JSON: 8 fields (OA 2.6)
+  firstOrderAt    DateTime? // written by order-domain event only
 
   // ── am_task fields (spec AM 2.2) ──
-  sellerId  String?
-  seller    Seller?  @relation(fields: [sellerId], references: [id])
-  taskType  String?  // welcome | checkin | intervention | save | qbr | coach | expansion | coord
-  title     String?
-  why       String?  // required on am_task — the numbers that produced it
-  ruleId    String?  // dedup key (AM 2.5)
-  alertKey  String?
-  escalated Boolean  @default(false)
-  escalatedAt DateTime?
+  sellerId         String?
+  seller           Seller?   @relation(fields: [sellerId], references: [id])
+  taskType         String? // welcome | checkin | intervention | save | qbr | coach | expansion | coord
+  title            String?
+  why              String? // required on am_task — the numbers that produced it
+  ruleId           String? // dedup key (AM 2.5)
+  alertKey         String?
+  escalated        Boolean   @default(false)
+  escalatedAt      DateTime?
   escalationReason String?
-  outcome   String?  // required to close an am_task
+  outcome          String? // required to close an am_task
 
   @@index([type, status, assigneeId])
   @@index([contactId])
@@ -186,39 +197,40 @@ model Seller {
   activatedAt              DateTime?
   assignedAccountManagerId String?
   accountManager           User?     @relation("SellerAM", fields: [assignedAccountManagerId], references: [id])
+  mdmManagerRef            String? // the account manager MDM names for the seller (Seller.accountManager.trackingId)
 
   // read-only mirror of the MDM platform (synced via API connector or import)
-  weeklyOrders        String  @default("[]") // JSON array of 8 ints, weeks 1..8 (oldest first)
-  deliveryRate        Float   @default(0)
-  returnRate          Float   @default(0)
-  cancelRate          Float   @default(0)
-  wallet              Float   @default(0)
-  walletNegativeDays  Int     @default(0)
-  products            Int     @default(0)
-  marketsServed       Int     @default(1)
-  momGrowthPct        Float   @default(0)
-  lastOrderAt         DateTime?
-  totalOrders         Int     @default(0)    // lifetime orders (playbook gates)
-  weeklyReturnRates   String  @default("[]") // JSON, weeks 1..8 oldest first (r6 "sustained")
-  mirrorInputs        String  @default("{}") // JSON: the platform counts behind the rates (window, delivered, returned, cancelled, orders) — AM 4.6
+  weeklyOrders       String    @default("[]") // JSON array of 8 ints, weeks 1..8 (oldest first)
+  deliveryRate       Float     @default(0)
+  returnRate         Float     @default(0)
+  cancelRate         Float     @default(0)
+  wallet             Float     @default(0)
+  walletNegativeDays Int       @default(0)
+  products           Int       @default(0)
+  marketsServed      Int       @default(1)
+  momGrowthPct       Float     @default(0)
+  lastOrderAt        DateTime?
+  totalOrders        Int       @default(0) // lifetime orders (playbook gates)
+  weeklyReturnRates  String    @default("[]") // JSON, weeks 1..8 oldest first (r6 "sustained")
+  mirrorInputs       String    @default("{}") // JSON: the platform counts behind the rates (window, delivered, returned, cancelled, orders) — AM 4.6
   // Feature F5 (not yet written by MDM platform — Engagement fallback applies)
-  lastLoginAt         DateTime?
-  lastStoreUpdateAt   DateTime?
-  lastProductAddedAt  DateTime?
+  lastLoginAt        DateTime?
+  lastStoreUpdateAt  DateTime?
+  lastProductAddedAt DateTime?
 
-  lastContactAt  DateTime?
-  lastSyncedAt   DateTime? // last mirror update from the MDM platform connector or an import
-  lastReviewAt   DateTime?
-  churnedAt      DateTime? // set by hand until D-04 structured outcome exists
-  welcomeCallAt  DateTime?
+  lastContactAt DateTime?
+  lastSyncedAt  DateTime? // last mirror update from the MDM platform connector or an import
+  lastReviewAt  DateTime?
+  churnedAt     DateTime? // set by hand until D-04 structured outcome exists
+  welcomeCallAt DateTime?
 
   // cached derived values (recompute job output; inputs stored for explainability)
-  stage            String   @default("New")
+  stage            String    @default("New")
   healthScore      Int?
   healthBand       String?
-  healthComponents String   @default("{}") // JSON: per-component score/weight/sentence/inputs
+  healthComponents String    @default("{}") // JSON: per-component score/weight/sentence/inputs
   healthComputedAt DateTime?
-  healthStale      Boolean  @default(false)
+  healthStale      Boolean   @default(false)
 
   tasks            Ticket[]
   healthHistory    HealthHistory[]
@@ -235,7 +247,8 @@ model HealthHistory {
   date       DateTime
   score      Int
   band       String
-  components String   // JSON snapshot
+  components String // JSON snapshot
+
   @@index([sellerId, date])
 }
 
@@ -244,10 +257,11 @@ model PlaybookProgress {
   id           String    @id @default(cuid())
   sellerId     String
   seller       Seller    @relation(fields: [sellerId], references: [id])
-  stepDay      Int       // 0,1,3,5,7,14,21,30
+  stepDay      Int // 0,1,3,5,7,14,21,30
   taskTicketId String?
   tickedAt     DateTime?
   tickedById   String?
+
   @@unique([sellerId, stepDay])
 }
 
@@ -256,8 +270,8 @@ model ConfigVersion {
   id        Int      @id @default(autoincrement())
   authorId  String?
   note      String?
-  diff      String   // JSON: {key: {before, after}}
-  snapshot  String   // JSON: FULL configuration (rollback restores this exactly)
+  diff      String // JSON: {key: {before, after}}
+  snapshot  String // JSON: FULL configuration (rollback restores this exactly)
   createdAt DateTime @default(now())
 }
 
@@ -271,19 +285,19 @@ model ConfigDraft {
 // ───────────────────────── Templates & macros ─────────────────────────
 // Meta WhatsApp templates. status: pending | approved | rejected
 model Template {
-  id        String  @id @default(cuid())
-  key       String  @unique
-  module    String  // oa | am
-  category  String  @default("utility") // marketing prohibited on the onboarding number
-  bodyEn    String
-  bodyAr    String?
-  status    String  @default("pending")
-  enabled   Boolean @default(true)
+  id       String  @id @default(cuid())
+  key      String  @unique
+  module   String // oa | am
+  category String  @default("utility") // marketing prohibited on the onboarding number
+  bodyEn   String
+  bodyAr   String?
+  status   String  @default("pending")
+  enabled  Boolean @default(true)
 }
 
 model Macro {
   id         String  @id @default(cuid())
-  module     String  // oa | am
+  module     String // oa | am
   scope      String  @default("team") // team | personal
   ownerId    String?
   name       String
@@ -305,12 +319,12 @@ model SavedView {
 // ───────────────────────── Immutable event log (single audit trail) ─────────────────────────
 model EventLog {
   id         String   @id @default(cuid())
-  actorId    String?  // null = system/rule
-  entityType String   // ticket | contact | seller | config | conversation | user
+  actorId    String? // null = system/rule
+  entityType String // ticket | contact | seller | config | conversation | user
   entityId   String
   action     String
-  before     String?  // JSON
-  after      String?  // JSON
+  before     String? // JSON
+  after      String? // JSON
   reason     String?
   createdAt  DateTime @default(now())
 
@@ -324,7 +338,7 @@ model Notification {
   id        String    @id @default(cuid())
   userId    String
   user      User      @relation(fields: [userId], references: [id])
-  kind      String    // e.g. oa.r3.attempt_due
+  kind      String // e.g. oa.r3.attempt_due
   title     String
   body      String?
   ticketId  String?
@@ -339,8 +353,8 @@ model Notification {
 // One run of an integration (MDM sync, Zoho import, …): what it did, with per-row results.
 model IntegrationRun {
   id         String    @id @default(cuid())
-  kind       String    // mdm_sync | zoho_import
-  status     String    // dry_run | completed | failed
+  kind       String // mdm_sync | zoho_import
+  status     String // dry_run | completed | failed
   actorId    String?
   summary    String    @default("{}") // JSON counts + per-row results
   startedAt  DateTime  @default(now())
@@ -355,24 +369,25 @@ model IntegrationRun {
 model MdmSkipped {
   id                String    @id @default(cuid())
   mdmRef            String    @unique
-  reasonCode        String    // market | phone | rejected | duplicate | stale | other
+  reasonCode        String // market | phone | rejected | duplicate | stale | other
   reason            String
   name              String?
   phone             String?
-  country           String?   // the market the sync derived (2-letter), possibly outside LY/IQ/LB
+  country           String? // the market the sync derived (2-letter), possibly outside LY/IQ/LB
   countries         String    @default("[]") // JSON: every country code the platform lists for the seller
   countryId         String?
   joinStatus        String?
   joinStatusDate    DateTime?
   registeredAt      DateTime?
   accountManagerRef String?
+  responsibleRef    String? // the MDM user responsible for the join (Seller.joinStatusResponsible)
   utm               String?
   platform          String    @default("{}") // JSON: the platform record as last read
   seenCount         Int       @default(1)
   firstSeenAt       DateTime  @default(now())
   lastSeenAt        DateTime  @default(now())
   runId             String?
-  decision          String?   // null = waiting | placed | lead | left_out | imported
+  decision          String? // null = waiting | placed | lead | left_out | imported
   decidedById       String?
   decidedAt         DateTime?
   decisionNote      String?
@@ -380,4 +395,47 @@ model MdmSkipped {
   figuresAt         DateTime? // placed sellers: when their platform figures were first read
 
   @@index([decision, reasonCode])
+}
+
+// Every user the MDM platform lists (Users on MDM), kept aside for the Admin's decision: imported
+// as one of ours (with the role the Admin names), or left out. One row per platform user; the
+// immutable record of who decided is the EventLog entry (mdm.staff_decided). `userId` links the
+// row to the account here once imported; every later sync refreshes name, markets and restriction.
+model MdmStaff {
+  id           String    @id @default(cuid())
+  mdmRef       String    @unique // the user's trackingId on MDM
+  name         String
+  email        String?
+  phones       String    @default("[]") // JSON
+  usernames    String    @default("[]") // JSON: MDM sign-in names
+  role         String? // as MDM names it
+  scope        String? // as MDM names it (the owner's "Commercial" group is a scope)
+  countries    String    @default("[]") // JSON: as MDM lists them (ids or codes)
+  markets      String    @default("[]") // JSON: LY | IQ | LB, derived from `countries`
+  restricted   Boolean   @default(false)
+  managerRef   String? // the account-manager record on MDM with the same email, if any
+  lastLoginAt  DateTime?
+  mdmCreatedAt DateTime?
+  platform     String    @default("{}") // JSON: the platform record as last read
+  seenCount    Int       @default(1)
+  firstSeenAt  DateTime  @default(now())
+  lastSeenAt   DateTime  @default(now())
+  runId        String?
+  userId       String? // our account, once imported (or linked by email)
+  decision     String? // null = waiting | imported | left_out
+  decidedById  String?
+  decidedAt    DateTime?
+  decisionNote String?
+  outcome      String    @default("{}") // JSON
+
+  @@index([decision, scope])
+}
+
+// Countries as MDM names them (id, alpha-3 code, name), learnt from every seller the sync reads;
+// lets a platform user's country ids become markets here.
+model MdmCountry {
+  id        String   @id
+  code      String
+  name      String?
+  updatedAt DateTime @updatedAt
 }

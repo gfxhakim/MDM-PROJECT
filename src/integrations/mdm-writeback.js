@@ -76,6 +76,7 @@ export async function planFor(entry, { db = prisma, managerIdFor }) {
     case 'SELLER_ASSIGNED':
     case 'seller.reassigned': {
       if (!after.assignedAccountManagerId) return null;
+      if (after.fromPlatform) return null; // MDM's own assignment, kept here — nothing to send back
       const managerId = await managerIdFor(after.assignedAccountManagerId);
       if (!managerId) return { skip: 'This account manager has no MDM account with the same email.' };
       return { method: 'POST', path: PATHS.assignManager(id), body: { accountManagerId: managerId } };

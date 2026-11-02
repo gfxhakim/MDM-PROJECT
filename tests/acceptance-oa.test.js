@@ -254,6 +254,8 @@ test('AC-OA-10 — the workspace docks the platform conversation; there is no on
 
 test('AC-OA-11 — outside the 24h window free text is refused server-side, templates are offered, remaining time is reported', async () => {
   const l = await lead();
+  // the window is measured against the clock, not T0: the merchant wrote a moment ago
+  await prisma.conversation.update({ where: { id: l.conversation.id }, data: { lastInboundAt: new Date() } });
   const s = await tok('salma');
   const open = (await call('GET', `/api/conversations/${l.conversation.id}`, { token: s })).body;
   assert.equal(open.window.open, true);

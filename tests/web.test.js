@@ -57,6 +57,11 @@ test('pages: login, both consoles built from the reference files with the adapte
   }
   const asset = await fetch(`${app.base}/assets/api.js`);
   assert.equal(asset.status, 200);
+  // the onboarding queue's funnel button filters by what the prototype names: country, source, channel, window state, owner
+  const adapter = await (await fetch(`${app.base}/assets/oa-adapter.js`)).text();
+  assert.match(adapter, /FILTER_KEYS = \['country', 'source', 'channel', 'win', 'owner'\]/);
+  assert.ok(adapter.includes("toast('Filters — country, source, channel, window state, owner')"), 'the prototype\'s placeholder button is replaced, not left as a toast');
+  assert.match(adapter, /window\.filtered = function/);
 });
 
 test('console bundle is the caller\'s book only; health and stage come from the server', async () => {

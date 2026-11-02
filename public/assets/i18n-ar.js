@@ -1797,3 +1797,53 @@ window.I18N_AR_PATTERNS = window.I18N_AR_PATTERNS.concat([
   [/^(.+) is at the book ceiling \((\d+)\)\.$/, (_, n, c) => `${n} بلغ سقف الدفتر (${c}).`],
   [/^Already here as (.+) \((\+\d+)\)(, a seller\.| — a lead is activated in the onboarding console\.)$/, (_, n, p, tail) => `موجود هنا أصلًا باسم ${n} (${p})${tail.startsWith(',') ? '، وهو بائع.' : ' — العميل المحتمل يُفعَّل من لوحة الإعداد.'}`],
 ]);
+// People on MDM + Accounts (Integrations page)
+Object.assign(window.I18N_AR, {
+  'People on MDM': 'الأشخاص على MDM',
+  "Every user the MDM platform lists (Users on MDM), with the role and group MDM gives them. Import the ones who work here with the role they have in this app; their data comes with them: the merchants MDM holds them responsible for become their leads, the sellers MDM names them account manager of stay in their book, and MDM's join history is in each conversation. Nothing is written to MDM.":
+    'كل مستخدم تذكره منصة MDM (المستخدمون في MDM)، مع الدور والمجموعة اللذين يعطيهما له MDM. استورد من يعملون هنا بالدور الذي لهم في هذا التطبيق؛ وتأتي بياناتهم معهم: التجار الذين يحمّلهم MDM مسؤوليتهم يصبحون عملاءهم المحتملين، والبائعون الذين يسمّيهم MDM مديري حساباتهم يبقون في دفترهم، وسجل الانضمام من MDM يكون في كل محادثة. لا يُكتب شيء في MDM.',
+  'All groups': 'كل المجموعات', '(no group)': '(بلا مجموعة)', 'Search name, email, phone or MDM id': 'ابحث بالاسم أو البريد أو الهاتف أو معرّف MDM',
+  'Role here': 'الدور هنا', 'Markets': 'الأسواق', '— used when MDM lists none of Libya, Iraq or Lebanon for the person': '— يُستخدم عندما لا يذكر MDM للشخص ليبيا أو العراق أو لبنان',
+  'Note (needed for several people, or to leave one out)': 'ملاحظة (مطلوبة لعدة أشخاص، أو لترك شخص خارجًا)',
+  'Import': 'استيراد', 'Imported': 'مستوردون', 'All': 'الكل', 'Select at least one person': 'اختر شخصًا واحدًا على الأقل',
+  'Name': 'الاسم', 'On MDM': 'على MDM', 'Their data on MDM': 'بياناتهم على MDM', 'Suggested role here': 'الدور المقترح هنا',
+  'MDM username:': 'اسم المستخدم في MDM:', 'No market in Libya, Iraq or Lebanon': 'لا سوق في ليبيا أو العراق أو لبنان',
+  'Restricted on MDM': 'مقيَّد على MDM', 'Last MDM sign-in': 'آخر دخول إلى MDM',
+  'merchants here': 'تجار هنا', 'merchants kept aside': 'تجار محفوظون جانبًا', 'sellers in their book': 'بائعون في دفترهم', 'Nothing tied to them yet': 'لا شيء مرتبط بهم بعد',
+  'No suggestion — choose the role': 'لا اقتراح — اختر الدور', 'switched off': 'موقوف', 'linked to the account already here': 'مرتبط بالحساب الموجود هنا أصلًا',
+  'Nobody waiting — everyone MDM lists is imported or left out.': 'لا أحد بالانتظار — كل من يذكرهم MDM إما مستوردون أو متروكون.',
+  'No users read from MDM yet — run a sync. If MDM refused the call, the status card above says so.': 'لم تُقرأ مستخدمون من MDM بعد — شغّل مزامنة. إذا رفض MDM الطلب فبطاقة الحالة أعلاه تقول ذلك.',
+  'Onboarding agent': 'وكيل إعداد', 'Account manager': 'مدير حسابات', 'Shift lead': 'قائد وردية', 'Manager': 'مدير', 'Read-only': 'قراءة فقط', 'Administrator': 'مسؤول',
+  'No email on MDM — an account here needs one.': 'لا بريد إلكتروني على MDM — الحساب هنا يحتاج إليه.',
+  'Import them into this app?': 'استيرادهم إلى هذا التطبيق؟', 'Role here:': 'الدور هنا:', 'Markets:': 'الأسواق:', 'as MDM lists them': 'كما يذكرها MDM',
+  "Each gets an account here and signs in with their MDM username and password. The merchants MDM holds them responsible for become their leads, the sellers MDM names them account manager of go to their book, and MDM's join history is in each conversation.":
+    'كل واحد يحصل على حساب هنا ويدخل باسم مستخدم MDM وكلمة مروره. التجار الذين يحمّلهم MDM مسؤوليتهم يصبحون عملاءهم المحتملين، والبائعون الذين يسمّيهم MDM مديري حساباتهم ينتقلون إلى دفترهم، وسجل الانضمام من MDM يكون في كل محادثة.',
+  'people on MDM waiting for your decision': 'أشخاص على MDM بانتظار قرارك', 'MDM did not let us read its users': 'لم يسمح لنا MDM بقراءة مستخدميه',
+  'Accounts in this app': 'الحسابات في هذا التطبيق',
+  'Everyone who can sign in. An account imported from MDM signs in with its MDM username and password (checked with MDM each time); a password set here also works. Switching an account off sends its open leads to the holding queue and its sellers to the same-market, smallest-book manager, each change audited.':
+    'كل من يستطيع الدخول. الحساب المستورد من MDM يدخل باسم مستخدم MDM وكلمة مروره (يتحقق منها MDM في كل مرة)؛ وكلمة مرور مضبوطة هنا تعمل أيضًا. إيقاف حساب يرسل عملاءه المحتملين المفتوحين إلى طابور الانتظار وبائعيه إلى مدير نفس السوق ذي أصغر دفتر، وكل تغيير يُدقَّق.',
+  'Sign-in': 'الدخول', 'Role · markets': 'الدور · الأسواق', 'From': 'المصدر', 'Work': 'العمل', 'Status': 'الحالة',
+  'MDM password, or the one set here': 'كلمة مرور MDM، أو المضبوطة هنا', 'MDM password': 'كلمة مرور MDM', 'Password set here': 'كلمة مرور مضبوطة هنا', 'No password yet': 'لا كلمة مرور بعد',
+  'open leads': 'عملاء محتملون مفتوحون', 'sellers in the book': 'بائعون في الدفتر', 'active': 'نشط', 'restricted on MDM': 'مقيَّد على MDM',
+  'demo account': 'حساب تجريبي', 'created here': 'أُنشئ هنا', 'Set password': 'ضبط كلمة المرور', 'Switch off': 'إيقاف', 'Switch on': 'تشغيل', 'No accounts.': 'لا حسابات.',
+  'New password for': 'كلمة مرور جديدة لـ', '(at least 8 characters). It is stored hashed and never shown again.': '(8 أحرف على الأقل). تُخزَّن مشفّرة ولا تُعرض مرة أخرى.',
+  'Password set.': 'ضُبطت كلمة المرور.', 'Their MDM password still works too.': 'كلمة مرور MDM الخاصة بهم تعمل أيضًا.',
+  'Their open leads go to the holding queue and are assigned again by capacity.': 'عملاؤهم المحتملون المفتوحون ينتقلون إلى طابور الانتظار ويُسنَدون من جديد حسب السعة.',
+  'Each of their sellers goes to the same-market, smallest-book manager, or stays unassigned with you alerted.': 'كل بائع لديهم ينتقل إلى مدير نفس السوق ذي أصغر دفتر، أو يبقى بلا إسناد مع تنبيهك.',
+  'They can no longer sign in.': 'لن يستطيعوا الدخول بعد الآن.', 'Reason (written to the audit log):': 'السبب (يُكتب في سجل التدقيق):',
+  'Account switched off.': 'أُوقف الحساب.', 'Account switched on.': 'شُغّل الحساب.',
+  'Email or MDM username': 'البريد الإلكتروني أو اسم مستخدم MDM',
+});
+Object.assign(window.I18N_AR_TEMPLATES, {
+  '{n} people selected.': 'تم اختيار {n} شخصًا.',
+  '{n} people on MDM waiting for your decision': '{n} أشخاص على MDM بانتظار قرارك',
+  '{n} people imported from MDM, none waiting.': '{n} أشخاص مستوردون من MDM، لا أحد بالانتظار.',
+  '{n} leads and {n} sellers given to them.': 'أُعطي لهم {n} عميلًا محتملًا و{n} بائعًا.',
+  '{n} leads to the holding queue, {n} sellers moved, {n} sellers left unassigned.': '{n} عميلًا محتملًا إلى طابور الانتظار، نُقل {n} بائعًا، وبقي {n} بائعًا بلا إسناد.',
+});
+// Onboarding queue filters (the funnel button)
+Object.assign(window.I18N_AR, {
+  'Window state': 'حالة النافذة', 'Owner': 'المالك', 'Me': 'أنا', 'Closing soon': 'تُغلق قريبًا', 'Open': window.I18N_AR['Open'] || 'مفتوحة',
+  'Waiting for capacity': window.I18N_AR['Waiting for capacity'] || 'بانتظار السعة', 'Clear filters': 'مسح عوامل التصفية', 'No filter is set': 'لا عامل تصفية مضبوط',
+  'Filters:': 'عوامل التصفية:', 'Portal widget': 'أداة البوابة', 'Voice': 'صوت', 'Email': 'بريد إلكتروني',
+});

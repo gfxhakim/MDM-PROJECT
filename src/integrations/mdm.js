@@ -18,8 +18,11 @@ import { applyMirror, mirrorData } from './mirror.js';
 import { getLiveConfig } from '../config/service.js';
 import { createSellerRecord } from './sellers.js';
 import { countryFromPhone } from './phone.js';
-import { PATHS, client, isAccepted, isRejected, managersByEmail, marketCode, sellerMetrics, sellersWithOrderChanges, sellerToRow } from './mdm-api.js';
+import { PATHS, client, isAccepted, isFollowup, isMissingDocuments, isNotAnswer, isPendingJoin, isRejected, managersByEmail, marketCode, platformUsers, sellerMetrics, sellersWithOrderChanges, sellerToRow, userToRow } from './mdm-api.js';
 import { markImported, rememberSkipped, watchedRefs } from './mdm-skipped.js';
+import { alignOwnership, assignLeadToPlatformAgent, countryIndex, moveSellerToPlatformManager, platformPeople, refreshStaffMarkets, rememberStaff } from './mdm-staff.js';
+import { changeTicket } from '../oa/service.js';
+import { addSystemLine } from '../core/conversations.js';
 
 export const mdmConfig = () => ({
   url: (process.env.MDM_API_URL || 'https://api.mdm.express').replace(/\/$/, ''),
@@ -36,6 +39,8 @@ export async function mdmStatus(db = prisma) {
     pull: !!c.apiKey, events: !!c.webhookKey,
     lastSync: last ? { at: last.finishedAt ?? last.startedAt, status: last.status, summary: JSON.parse(last.summary) } : null,
     skippedWaiting: await db.mdmSkipped.count({ where: { decision: null } }),
+    staffWaiting: await db.mdmStaff.count({ where: { decision: null } }),
+    staffImported: await db.mdmStaff.count({ where: { decision: 'imported' } }),
     detail: c.apiKey ? `Syncing merchants and sellers from ${c.url}.` : 'Not connected — running on imported or seeded data. Set MDM_API_KEY.',
   };
 }
@@ -60,7 +65,60 @@ const dateOr = (v) => { if (!v) return null; const d = new Date(v); return Numbe
 async function upsertContext(db) {
   const { values: config } = await getLiveConfig(db);
   const managers = await db.user.findMany({ where: { role: 'ACCOUNT_MANAGER', active: true } });
-  return { config, managers, leadMaxAgeDays: mdmConfig().leadMaxAgeDays };
+  const people = await platformPeople(db); // imported staff: the lead's agent and the seller's manager MDM names
+  return { config, managers, leadMaxAgeDays: mdmConfig().leadMaxAgeDays, ...people };
+}
+
+const OPEN_OA = ['new', 'failed_to_contact', 'prequalified', 'qualified'];
+
+/**
+ * The merchant's record on MDM comes with them (OA 3.5 applied to the platform): every join mark
+ * MDM recorded (not answered, follow-up, missing documents, accepted …) is a read-only legacy line
+ * in the conversation, dated as on MDM and credited to the MDM user who made it. Idempotent: one
+ * line per mark, whatever the number of runs.
+ */
+async function importJoinHistory(contactId, row, ctx, db) {
+  const history = (row.history ?? []).filter((h) => h.date);
+  if (!history.length) return 0;
+  const conv = await db.conversation.findFirst({ where: { contactId } });
+  if (!conv) return 0;
+  let n = 0;
+  for (const h of history) {
+    const at = dateOr(h.date);
+    if (!at) continue;
+    const externalId = `mdm:join:${row.mdmRef}:${at.toISOString()}:${String(h.status ?? '').slice(0, 40)}`;
+    const body = `MDM · ${h.status ?? 'note'}${h.notes ? ` — ${h.notes}` : ''}${h.responsibleName ? ` · ${h.responsibleName}` : ''}`;
+    const authorUserId = h.responsibleRef ? ctx.staffByRef?.get(h.responsibleRef)?.id ?? null : null;
+    await db.message.upsert({ where: { externalId }, update: { body, authorUserId },
+      create: { conversationId: conv.id, direction: 'internal', kind: 'system', body, legacy: true, externalId, authorUserId, createdAt: at } });
+    n++;
+  }
+  return n;
+}
+
+/** The platform's join status, mapped to the onboarding statuses here by meaning (OA 3.5: unmapped → Pre-qualified with a note). */
+async function applyPlatformStatus(ticket, row, db) {
+  const st = row.joinStatus;
+  if (isPendingJoin(st) || isAccepted(st) || isRejected(st)) return ticket;
+  let data; let note = null;
+  if (isNotAnswer(st)) data = { status: 'failed_to_contact' };
+  else if (isMissingDocuments(st)) data = { status: 'prequalified', stage: 'documents' };
+  else if (isFollowup(st)) data = { status: 'prequalified' };
+  else { data = { status: 'prequalified' }; note = `MDM status "${st}" has no onboarding status here — imported as Pre-qualified.`; }
+  if (data.status === ticket.status && (!data.stage || data.stage === ticket.stage)) return ticket;
+  const updated = await changeTicket(db, ticket, data, { action: 'ticket.imported_status', reason: `Status on the MDM platform: ${st}` });
+  if (note) { const conv = await db.conversation.findFirst({ where: { contactId: ticket.contactId } }); if (conv) await addSystemLine(conv.id, note, db); }
+  return updated;
+}
+
+/** What MDM ties to a merchant that is already here: the responsible agent, the account manager, the join history. */
+async function carryPlatformData(contact, row, ctx, db) {
+  if (row.responsibleRef && contact.mdmResponsibleRef !== row.responsibleRef) await db.contact.update({ where: { id: contact.id }, data: { mdmResponsibleRef: row.responsibleRef } });
+  await importJoinHistory(contact.id, row, ctx, db);
+  if (row.responsibleRef && ctx.agentsByRef?.size) {
+    const t = await db.ticket.findFirst({ where: { contactId: contact.id, type: 'onboarding_task', status: { in: OPEN_OA } } });
+    if (t) await assignLeadToPlatformAgent(t, ctx.agentsByRef.get(row.responsibleRef), {}, db);
+  }
 }
 
 /**
@@ -85,6 +143,14 @@ export async function upsertFromMdm(row, ctx, db = prisma) {
     const { data, errors } = mirrorData(metrics);
     if (errors.length) return { ok: false, action: 'error', ref, reason: errors.join(' ') };
     await applyMirror(existing.id, data, db);
+    if (row.accountManagerRef !== undefined && existing.mdmManagerRef !== (row.accountManagerRef ?? null)) {
+      await db.seller.update({ where: { id: existing.id }, data: { mdmManagerRef: row.accountManagerRef ?? null } });
+    }
+    const contact = await db.contact.findUnique({ where: { id: existing.contactId } });
+    if (contact) {
+      await carryPlatformData(contact, row, ctx, db);
+      if (row.accountManagerRef && ctx.managersByMdmRef?.size) await moveSellerToPlatformManager({ ...existing, mdmManagerRef: row.accountManagerRef }, ctx.managersByMdmRef.get(row.accountManagerRef), {}, db);
+    }
     return { ok: true, action: 'updated', ref, sellerId: existing.id };
   }
   const skip = (code, reason) => ({ ok: false, action: 'skipped', code, ref, reason });
@@ -95,6 +161,7 @@ export async function upsertFromMdm(row, ctx, db = prisma) {
   const contact = await db.contact.findUnique({ where: { phone } });
   if (contact) {
     if (ref && !contact.mdmRef) await db.contact.update({ where: { id: contact.id }, data: { mdmRef: String(ref) } });
+    if (ref) await carryPlatformData(contact, { ...row, mdmRef: String(ref) }, ctx, db);
     return skip('duplicate', accepted
       ? 'Already an onboarding lead here — activate it in the onboarding console so the handoff record is complete.'
       : 'Already a contact here — linked to its platform id.');
@@ -113,22 +180,36 @@ export async function upsertFromMdm(row, ctx, db = prisma) {
       return skip('stale', `Registered ${created.toISOString().slice(0, 10)}, more than ${maxAge} days ago and never accepted — not opened as a lead.`);
     }
     const r = await registerMerchant({ phone, name: row.name, country: market, sourceUtm: row.utm ?? row.sourceUtm ?? 'mdm_platform' }, {}, db);
-    if (ref) await db.contact.update({ where: { id: r.contact.id }, data: { mdmRef: String(ref) } });
-    return { ok: true, action: 'lead_created', ref, contactId: r.contact.id, ticketId: r.ticket?.id ?? null };
+    // the merchant's record comes with them (OA 3.5): the registration date as on MDM, the status
+    // MDM has for the join, the agent MDM holds responsible, and the join history — counters start at 0
+    await db.contact.update({ where: { id: r.contact.id }, data: { ...(ref ? { mdmRef: String(ref) } : {}), mdmResponsibleRef: row.responsibleRef ?? null, ...(created ? { createdAt: created } : {}) } });
+    let ticket = r.ticket ?? null;
+    let owner = null;
+    if (ticket) {
+      if (created && created < ticket.createdAt) ticket = await db.ticket.update({ where: { id: ticket.id }, data: { createdAt: created } });
+      ticket = await applyPlatformStatus(ticket, row, db);
+      if (row.responsibleRef && ctx.agentsByRef?.size) {
+        const agent = ctx.agentsByRef.get(row.responsibleRef);
+        if (await assignLeadToPlatformAgent(ticket, agent, {}, db)) owner = agent.name;
+      }
+    }
+    if (ref) await importJoinHistory(r.contact.id, { ...row, mdmRef: String(ref) }, ctx, db);
+    return { ok: true, action: 'lead_created', ref, contactId: r.contact.id, ticketId: ticket?.id ?? null, owner };
   }
   if (!ref) return skip('no_ref', 'An activated seller needs its MDM seller id (mdmRef).');
   const { data: mirror, errors } = mirrorData(metrics);
   if (errors.length) return { ok: false, action: 'error', ref, reason: errors.join(' ') };
-  // keep the platform's account manager when they are ours, cover the market and have room
+  // the platform's account manager keeps the seller when they are one of ours (imported from MDM,
+  // or the same email); otherwise AM 3.2 picks the book
   let managerId = null; let ownership;
-  const named = row.managerEmail ? ctx.managers?.find((m) => m.email.toLowerCase() === row.managerEmail.toLowerCase()) : null;
-  if (named && JSON.parse(named.markets).includes(market)
-    && await db.seller.count({ where: { assignedAccountManagerId: named.id } }) < ctx.config['am.maxBook']) {
-    managerId = named.id; ownership = `Kept with ${named.name} (account manager on the platform).`;
-  }
+  const named = (row.accountManagerRef && ctx.managersByMdmRef?.get(row.accountManagerRef))
+    ?? (row.managerEmail ? ctx.managers?.find((m) => m.email.toLowerCase() === row.managerEmail.toLowerCase()) : null);
+  if (named) { managerId = named.id; ownership = `Kept with ${named.name} (account manager on the platform).`; }
   const { seller, ownership: placed } = await createSellerRecord({ phone, name: row.name || phone, market, mdmRef: String(ref), source: 'mdm_platform',
     activatedAt, welcomeCallAt: dateOr(row.welcomeCallAt), mirror, managerId, ownership }, { config: ctx.config, managers: ctx.managers ?? [] }, db);
-  await db.contact.update({ where: { id: seller.contactId }, data: { mdmRef: String(ref) } });
+  await db.contact.update({ where: { id: seller.contactId }, data: { mdmRef: String(ref), mdmResponsibleRef: row.responsibleRef ?? null } });
+  if (row.accountManagerRef) await db.seller.update({ where: { id: seller.id }, data: { mdmManagerRef: row.accountManagerRef } });
+  await importJoinHistory(seller.contactId, { ...row, mdmRef: String(ref) }, ctx, db);
   return { ok: true, action: 'seller_created', ref, sellerId: seller.id, ownership: placed };
 }
 
@@ -218,12 +299,11 @@ function tally(bucket, ref, reason) {
 async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = prisma, now = new Date(), onStarted = null } = {}) {
   const c = mdmConfig();
   const last = full ? null : await db.integrationRun.findFirst({ where: { kind: 'mdm_sync', status: 'completed' }, orderBy: { startedAt: 'desc' } });
-  const ctx = await upsertContext(db);
   const api = client({ url: c.url, apiKey: c.apiKey, paymentPassword: c.paymentPassword, fetchImpl });
   const run = await db.integrationRun.create({ data: { kind: 'mdm_sync', status: 'running', actorId } });
   onStarted?.(run.id);
   const summary = { full: !last, total: null, fetched: 0, updated: 0, leadsCreated: 0, sellersCreated: 0, skippedCount: 0, errorCount: 0, warningCount: 0,
-    reasons: { skipped: {}, errors: {}, warnings: {} }, live: { current: null, recent: [] } };
+    reasons: { skipped: {}, errors: {}, warnings: {} }, live: { current: null, recent: [] }, staff: { read: 0, error: null }, aligned: { leads: 0, sellers: 0 } };
   const done = new Set();
   // Sellers kept aside earlier (waiting, or left out): if one now imports by the normal rules, its row is closed.
   const watched = await watchedRefs(db).catch(() => new Set());
@@ -238,7 +318,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
     feed({ ref: r.ref ?? row?.mdmRef ?? null, name: row?.name ?? null, action: r.action,
       note: r.action === 'seller_created' ? `${row?.country ?? ''} book · ${figures(metrics)}${r.ownership ? ` · ${r.ownership}` : ''}`
         : r.action === 'updated' ? figures(metrics)
-          : r.action === 'lead_created' ? `onboarding lead${row?.country ? ` (${row.country})` : ''}`
+          : r.action === 'lead_created' ? `onboarding lead${row?.country ? ` (${row.country})` : ''}${r.owner ? ` · ${r.owner} (responsible on MDM)` : ''}`
             : (r.reason ?? '') });
     // Every skipped seller is kept aside, with what the platform says, for an Admin's decision.
     const ref = row?.mdmRef ?? r.ref;
@@ -254,13 +334,36 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
   try {
     const since = last?.startedAt ?? null;
     // platform account managers by id → their email, to keep an existing owner who is one of ours
-    const platformManagers = new Map([...(await managersByEmail(api).catch(() => new Map())).values()].map((m) => [m.trackingId, m.email]));
+    const managers = await managersByEmail(api).catch(() => new Map());
+    const platformManagers = new Map([...managers.values()].map((m) => [m.trackingId, m.email]));
+    // Every platform user, kept aside for the Admin (People on MDM). A refusal here does not stop
+    // the sellers: it is reported, so the API key's rights can be extended.
+    const countries = new Set((await db.mdmCountry.findMany({ select: { id: true } })).map((r) => r.id));
+    const learnCountries = async (places) => {
+      for (const p of places ?? []) {
+        if (!p?.id || !p.code || countries.has(p.id)) continue;
+        countries.add(p.id);
+        await db.mdmCountry.upsert({ where: { id: p.id }, update: { code: p.code, name: p.name ?? null }, create: { id: p.id, code: p.code, name: p.name ?? null } }).catch(() => {});
+      }
+    };
+    for (const m of managers.values()) await learnCountries([{ id: m.countryId ?? m.country?.id ?? null, code: m.country?.code ? marketCode(m.country.code) : null, name: m.country?.name ?? null }]);
+    try {
+      const index = await countryIndex(db);
+      for await (const u of platformUsers(api)) {
+        const row = userToRow(u);
+        if (!row.mdmRef) continue;
+        await rememberStaff(row, { runId: run.id, now: new Date(), index, managerRef: row.email ? managers.get(row.email)?.trackingId ?? null : null }, db);
+        summary.staff.read++;
+      }
+    } catch (err) { summary.staff.error = err.message; summary.warningCount++; tally(summary.reasons.warnings, 'users', `people on MDM: ${err.message}`); }
+    const ctx = await upsertContext(db); // after the staff step: the agents and managers MDM names may be ours now
     if (!since) summary.total = await api.count(PATHS.sellers).catch(() => null); // how far a full run is
     for await (const s of api.search(PATHS.sellers, { sortBy: { updatedAt: 'DESC' } })) {
       const row = sellerToRow(s);
       if (since && row.updatedAt && row.updatedAt < since) break; // newest first: the rest are unchanged
       summary.fetched++;
       await progress(row.mdmRef ?? null);
+      await learnCountries(row.places);
       if (!row.mdmRef || done.has(row.mdmRef)) continue;
       done.add(row.mdmRef);
       try {
@@ -312,6 +415,10 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
         await record({ ok: true, action: 'updated', ref }, { mdmRef: ref, name: h.name }, m.metrics);
       } catch (err) { await record({ action: 'error', ref, reason: err.message }, { mdmRef: ref, name: h.name }); }
     }
+    // country ids learnt from the sellers of this run → markets for the people read before them
+    await refreshStaffMarkets(await countryIndex(db), db).catch((err) => { summary.warningCount++; tally(summary.reasons.warnings, 'users', err.message); });
+    // their data comes with them: whatever MDM ties to people imported since the last run
+    summary.aligned = await alignOwnership({ actorId }, db).catch((err) => { summary.warningCount++; tally(summary.reasons.warnings, 'ownership', err.message); return { leads: 0, sellers: 0 }; });
     summary.live.current = null;
     await save('completed');
   } catch (err) {

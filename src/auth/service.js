@@ -52,13 +52,28 @@ export async function loadPrincipal(userId, now = new Date(), db = prisma) {
   };
 }
 
-export async function login(email, password, db = prisma) {
+/**
+ * Sign in with an email (or, for staff imported from MDM, one of their MDM usernames) and a
+ * password. A password set here is checked here; an account imported from MDM with no password
+ * here, or whose local check fails, is checked with MDM itself (mdm-auth.js).
+ */
+export async function login(email, password, db = prisma, { fetchImpl = fetch } = {}) {
   if (typeof email !== 'string' || typeof password !== 'string') {
     throw new HttpError(400, 'bad_request', 'Email and password are required.');
   }
-  const user = await db.user.findUnique({ where: { email: email.trim().toLowerCase() } });
+  const typed = email.trim();
+  let user = await db.user.findUnique({ where: { email: typed.toLowerCase() } });
+  if (!user && typed) {
+    // an MDM username (a phone, a handle) names the account imported from MDM that lists it
+    const hits = await db.user.findMany({ where: { mdmRef: { not: null }, OR: [{ mdmUsernames: { contains: JSON.stringify(typed) } }, { mdmUsernames: { contains: JSON.stringify(typed.toLowerCase()) } }] }, take: 2 });
+    if (hits.length === 1) user = hits[0];
+  }
   // Same message for unknown email, wrong password and inactive account.
-  const ok = user && user.active && (await bcrypt.compare(password, user.passwordHash));
+  let ok = !!(user && user.active && user.passwordHash && (await bcrypt.compare(password, user.passwordHash)));
+  if (!ok && user && user.active && user.mdmRef) {
+    const { verifyWithPlatform } = await import('../integrations/mdm-auth.js');
+    ok = await verifyWithPlatform(user, typed, password, { fetchImpl });
+  }
   if (!ok) throw unauthorized('Invalid email or password.');
   return { token: signToken(user.id), user: await loadPrincipal(user.id, new Date(), db) };
 }

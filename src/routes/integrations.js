@@ -13,6 +13,7 @@ import { prisma } from '../db.js';
 import { handleWebhook, verifySignature, whatsappConfig, whatsappStatus } from '../integrations/whatsapp.js';
 import { handleMdmEvent, mdmConfig, mdmStatus, startSync } from '../integrations/mdm.js';
 import { decideSkipped, listSkipped } from '../integrations/mdm-skipped.js';
+import { decideStaff, listStaff } from '../integrations/mdm-staff.js';
 import { dial, handleYeastarEvent, yeastarConfig, yeastarStatus } from '../integrations/yeastar.js';
 import { runImport } from '../integrations/importer.js';
 import { OPTIONAL, optionalOn } from '../integrations/optional.js';
@@ -96,6 +97,18 @@ integrationsRouter.post('/mdm/skipped/decide', requirePermission('integrations.m
     result.sync = await startSync({ actorId: req.user.id }).then((s) => ({ started: true, runId: s.runId }), (e) => ({ started: false, reason: e.message }));
   }
   res.json(result);
+}));
+
+// People on MDM: every platform user the pull read, waiting for the Admin's decision.
+// ?decision=waiting|imported|left_out|all  &scope=  &q=
+integrationsRouter.get('/mdm/staff', requirePermission('integrations.manage'), ah(async (req, res) => {
+  res.json(await listStaff({ decision: req.query.decision, scope: req.query.scope || null, q: req.query.q || null }));
+}));
+
+// { ids, action: import|leave_out|reopen, role?, markets?, note? } — each person reported on their
+// own, one audit entry for the run; an import then gives them the leads and sellers MDM ties to them.
+integrationsRouter.post('/mdm/staff/decide', requirePermission('integrations.manage'), ah(async (req, res) => {
+  res.json(await decideStaff(req.user, req.body ?? {}));
 }));
 
 // Zoho CSV/XLSX import. dryRun defaults to true: the first call returns the per-row plan.

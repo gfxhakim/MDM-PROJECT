@@ -92,6 +92,8 @@
           else T(e, 'status', `Status → ${STATUS[STATUS_MAP[a.status]]?.label ?? a.status}`, e.reason || '');
           break;
         case 'ticket.reopened': T(e, 'status', 'Queue item reopened', e.reason || ''); break;
+        case 'ticket.imported_status': T(e, 'status', `Status from MDM → ${STATUS[STATUS_MAP[a.status]]?.label ?? a.status}`, e.reason || ''); break;
+        case 'ticket.held': T(e, 'assign', `Held — ${a.holdReason ?? ''}`, e.reason || 'Back in the holding queue; assigned again as soon as an agent has capacity.'); break;
         case 'ticket.walkthrough_booked': T(e, 'book', `Walkthrough booked — ${MODE_FROM_API[a.walkthroughMode] ?? ''}`, a.walkthroughAt ? fmtT(a.walkthroughAt) : ''); break;
         case 'ticket.hub_sent': T(e, 'hub', 'Resource Hub sent — walkthrough declined', 'Went-quiet cadence started.'); break;
         case 'ticket.followup_sent': T(e, 'quiet', `Follow-up ${a.followupNo} of ${QUIET_MAX} — no reply`, 'Template oa_nudge_v2 sent.'); break;
@@ -580,6 +582,70 @@
     act(() => API.post('/api/admin/elevations', { userId: g('el-user'), role: g('el-role'), endsAt, reason }), 'Cover granted — it expires by itself');
   };
   window.togPerm = function () { toast('Roles and grants are fixed by the specification; changes are an Administrator release.', 'warn'); };
+
+  // ───────────── queue filters ─────────────
+  // The prototype's funnel button names them: country, source, channel, window state, owner. A
+  // filter narrows the current view after its own condition and the search; the rail counts stay
+  // the view's. The choice lives in S, so a language switch or a route change keeps it (OA 6.3,
+  // AC-OA-24). "Save this view" (a personal saved view, OA 6.3) is the next step, not built yet.
+  const FILTER_KEYS = ['country', 'source', 'channel', 'win', 'owner'];
+  S.filters = S.filters || { country: '', source: '', channel: '', win: '', owner: '' };
+  S.filtersOpen = false;
+  const WIN_LABEL = { open: 'Open', soon: 'Closing soon', shut: 'Template only' };
+  const FILTER_LABEL = { country: 'Country', source: 'Source', channel: 'Channel', win: 'Window state', owner: 'Owner' };
+  const uniq = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  function filterOptions() {
+    return {
+      country: uniq(S.leads.map((l) => l.country)).map((c) => [c, c]),
+      source: uniq(S.leads.map((l) => l.source)).map((x) => [x, x]),
+      channel: uniq(S.leads.map((l) => l.channel)).map((k) => [k, CHAN[k]?.label || k]),
+      win: Object.entries(WIN_LABEL),
+      owner: [['me', 'Me'], ...TEAM.filter((t) => t.id !== ME).map((t) => [t.id, t.name]), ['none', 'Waiting for capacity']],
+    };
+  }
+  function passesFilters(l) {
+    const f = S.filters;
+    if (f.country && l.country !== f.country) return false;
+    if (f.source && l.source !== f.source) return false;
+    if (f.channel && l.channel !== f.channel) return false;
+    if (f.win && !(isOpen(l) && winState(l) === f.win)) return false;
+    if (f.owner === 'me') return l.ownerId === ME;
+    if (f.owner === 'none') return !l.ownerId && isOpen(l);
+    if (f.owner) return l.ownerId === f.owner;
+    return true;
+  }
+  const activeFilters = () => FILTER_KEYS.filter((k) => S.filters[k]);
+  const filterText = (k) => { const v = S.filters[k]; const o = filterOptions()[k].find((x) => x[0] === v); return o ? o[1] : v; };
+  const protoFiltered = window.filtered;
+  window.filtered = function () { return protoFiltered().filter(passesFilters); };
+  X.setFilter = function (k, v) { if (FILTER_KEYS.includes(k)) { S.filters[k] = v; render(); } };
+  X.clearFilters = function () { for (const k of FILTER_KEYS) S.filters[k] = ''; render(); };
+  X.toggleFilters = function () { S.filtersOpen = !S.filtersOpen; render(); };
+  function filterPanel() {
+    const o = filterOptions(); const f = S.filters; const n = activeFilters().length;
+    const sel = (k) => `<label class="fl" style="margin:0;display:flex;flex-direction:column;gap:4px">${FILTER_LABEL[k]}
+      <select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setFilter('${k}',this.value)"><option value="">All</option>
+      ${o[k].map(([v, t]) => `<option value="${esc(v)}" ${f[k] === v ? 'selected' : ''} ${k === 'source' ? 'data-i18n="off"' : ''}>${esc(t)}</option>`).join('')}</select></label>`;
+    return `<div class="card" id="qfilters" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;padding:12px 14px;margin:-4px 0 14px">
+      ${FILTER_KEYS.map(sel).join('')}<span style="flex:1"></span>
+      <button class="btn btn-ghost btn-sm" onclick="MDM.clearFilters()" ${n ? '' : 'disabled title="No filter is set"'}>Clear filters</button></div>`;
+  }
+  function filterLine() {
+    return `<div class="tiny muted" id="qfilters-line" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-6px 0 12px">
+      <span>Filters:</span>${activeFilters().map((k) => `<span class="chip"><span>${FILTER_LABEL[k]}</span> · <span ${k === 'source' ? 'data-i18n="off"' : ''}>${esc(filterText(k))}</span></span>`).join('')}
+      <button class="btn btn-ghost btn-sm" onclick="MDM.clearFilters()">Clear filters</button></div>`;
+  }
+  const protoViewQueue = window.viewQueue;
+  window.viewQueue = function () {
+    const n = activeFilters().length;
+    let html = protoViewQueue();
+    html = html.replace("<button class=\"icon-btn red\" onclick=\"toast('Filters — country, source, channel, window state, owner')\">",
+      `<button class="icon-btn red" title="Filters — country, source, channel, window state, owner" onclick="MDM.toggleFilters()" style="position:relative${S.filtersOpen ? ';outline:3px solid rgba(220,38,38,.25)' : ''}">`
+      + (n ? `<span class="num" style="position:absolute;top:-6px;inset-inline-end:-6px;background:#111;color:#fff;border-radius:999px;font-size:10px;font-weight:700;padding:1px 5px;line-height:14px">${n}</span>` : ''));
+    if (S.filtersOpen) html = html.replace('<div class="tbl-wrap">', filterPanel() + '<div class="tbl-wrap">');
+    else if (n) html = html.replace('<div class="tbl-wrap">', filterLine() + '<div class="tbl-wrap">');
+    return html;
+  };
 
   // ───────────── boot ─────────────
   async function boot() {

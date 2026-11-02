@@ -7,7 +7,7 @@ import { grantsFor } from '../auth/permissions.js';
 export const authRouter = Router();
 
 authRouter.post('/login', ah(async (req, res) => {
-  res.json(await login(req.body?.email, req.body?.password));
+  res.json(await login(req.body?.email ?? req.body?.username, req.body?.password));
 }));
 
 // The caller and every grant they hold, so the UI can render disabled controls with their reason.

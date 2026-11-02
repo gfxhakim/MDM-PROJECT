@@ -55,8 +55,12 @@ code{font-size:12px;background:#F3F4F6;padding:1px 5px;border-radius:4px}
 .toolbar label{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink3)}
 .toolbar .row:first-child{margin-top:0}
 input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;border:1px solid var(--line);border-radius:var(--r);padding:0 10px;min-width:240px;background:#fff}
-#skipped table td{max-width:320px}
-#skipped ul{margin:6px 0 0;padding-inline-start:18px}
+#skipped table td,#staff table td{max-width:320px}
+#skipped ul,#staff ul{margin:6px 0 0;padding-inline-start:18px}
+.chk{display:inline-flex;align-items:center;gap:4px;margin-inline-end:8px}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;background:#F3F4F6;color:var(--ink3)}
+.tag.mdm{background:#EEF2FF;color:#3730A3} .tag.demo{background:var(--warn-bg);color:var(--warn)} .tag.off{background:var(--bad-bg);color:var(--bad)}
+#accounts button.btn{height:28px;padding:0 10px;font-size:12px}
 </style>
 </head>
 <body>
@@ -92,6 +96,39 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
     </div>
     <div id="skMsg"></div>
     <div class="scroll" style="max-height:520px"><table><thead id="skHead"></thead><tbody id="skRows"><tr><td class="muted">Loading…</td></tr></tbody></table></div>
+  </section>
+
+  <section class="card" id="staff">
+    <h2>People on MDM <span class="pill off" id="stWaiting">0 waiting</span></h2>
+    <p>Every user the MDM platform lists (Users on MDM), with the role and group MDM gives them. Import the ones who work here with the role they have in this app; their data comes with them: the merchants MDM holds them responsible for become their leads, the sellers MDM names them account manager of stay in their book, and MDM's join history is in each conversation. Nothing is written to MDM.</p>
+    <div id="stError"></div>
+    <div class="tabs" id="stTabs"></div>
+    <div class="row">
+      <select id="stScope"><option value="">All groups</option></select>
+      <input type="search" id="stQ" placeholder="Search name, email, phone or MDM id">
+    </div>
+    <div class="toolbar" id="stTools" hidden>
+      <div class="row" id="stImportWrap">
+        <label>Role here <select id="stRole"></select></label>
+        <label>Markets <span id="stMarketBoxes"></span></label>
+        <span class="muted">— used when MDM lists none of Libya, Iraq or Lebanon for the person</span>
+      </div>
+      <div class="row">
+        <input type="text" id="stNote" style="flex:1 1 300px" placeholder="Note (needed for several people, or to leave one out)">
+        <button class="btn primary" id="stImport">Import <span class="n"></span></button>
+        <button class="btn" id="stLeave">Leave out <span class="n"></span></button>
+        <button class="btn" id="stReopen" hidden>Put back on the list <span class="n"></span></button>
+      </div>
+    </div>
+    <div id="stMsg"></div>
+    <div class="scroll" style="max-height:520px"><table><thead id="stHead"></thead><tbody id="stRows"><tr><td class="muted">Loading…</td></tr></tbody></table></div>
+  </section>
+
+  <section class="card" id="accounts">
+    <h2>Accounts in this app</h2>
+    <p>Everyone who can sign in. An account imported from MDM signs in with its MDM username and password (checked with MDM each time); a password set here also works. Switching an account off sends its open leads to the holding queue and its sellers to the same-market, smallest-book manager, each change audited.</p>
+    <div id="acMsg"></div>
+    <div class="scroll" style="max-height:480px"><table><thead><tr><th>Name</th><th>Sign-in</th><th>Role · markets</th><th>From</th><th>Work</th><th>Status</th><th></th></tr></thead><tbody id="acRows"><tr><td class="muted">Loading…</td></tr></tbody></table></div>
   </section>
 
   <section class="card" id="zoho" hidden>
@@ -174,7 +211,9 @@ function renderStatus() {
     + card(`MDM platform ${pill(s.mdm.pull)}`, [esc(s.mdm.detail),
       `Webhook: ${s.mdm.events ? 'accepted at <code>/api/integrations/mdm/events</code>' : 'off (set MDM_WEBHOOK_SECRET)'}`,
       `Last sync: ${last ? `${when(last.at)} — ${esc(last.status)}${last.summary ? `, ${syncText(last.summary)}` : ''}` : 'never'}`,
-      s.mdm.skippedWaiting ? `<a href="#skipped" style="color:var(--red);font-weight:600">${s.mdm.skippedWaiting} skipped sellers waiting for your decision</a>` : 'No skipped sellers waiting.'],
+      s.mdm.skippedWaiting ? `<a href="#skipped" style="color:var(--red);font-weight:600">${s.mdm.skippedWaiting} skipped sellers waiting for your decision</a>` : 'No skipped sellers waiting.',
+      s.mdm.staffWaiting ? `<a href="#staff" style="color:var(--red);font-weight:600">${s.mdm.staffWaiting} people on MDM waiting for your decision</a>` : `${s.mdm.staffImported ?? 0} people imported from MDM, none waiting.`,
+      ...(last?.summary?.staff?.error ? [`<span class="pill fail">MDM did not let us read its users</span> <span data-i18n="off">${esc(last.summary.staff.error)}</span>`] : [])],
       `<div class="row"><button class="btn" id="sync" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Sync now</button>`
       + `<button class="btn" id="full" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Full resync</button></div>`)
     + card(`Our work recorded on MDM ${pill(wb.on, 'On', 'Off')}`, [esc(wb.detail),
@@ -349,6 +388,154 @@ async function decide(action) {
   } catch (e) { showSkErr(e); renderSkipped(); }
 }
 
+// ───────── People on MDM: every platform user, imported here with a role or left out ─────────
+const st = { tab: 'waiting', scope: '', q: '', data: null, selected: new Set(), loadedAt: 0 };
+const ST_DECISION = { imported: 'Imported', left_out: 'Left out' };
+const showStErr = (e) => { document.getElementById('stMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
+
+async function loadStaff() {
+  const qs = new URLSearchParams({ decision: st.tab });
+  if (st.scope) qs.set('scope', st.scope);
+  if (st.q) qs.set('q', st.q);
+  st.data = await API.get('/api/integrations/mdm/staff?' + qs);
+  st.loadedAt = Date.now();
+  const ok = new Set(st.data.items.filter((i) => !i.blocked).map((i) => i.id));
+  st.selected = new Set([...st.selected].filter((id) => ok.has(id)));
+  renderStaff();
+}
+
+function onMdmCell(i) {
+  const parts = [];
+  if (i.onMdm.leads) parts.push(`<span><span data-i18n="off">${i.onMdm.leads}</span> <span>merchants here</span></span>`);
+  if (i.onMdm.skipped) parts.push(`<span><span data-i18n="off">${i.onMdm.skipped}</span> <span>merchants kept aside</span></span>`);
+  if (i.onMdm.sellers) parts.push(`<span><span data-i18n="off">${i.onMdm.sellers}</span> <span>sellers in their book</span></span>`);
+  return parts.length ? parts.join('<br>') : '<span class="muted">Nothing tied to them yet</span>';
+}
+
+function renderStaff() {
+  const d = st.data; if (!d) return;
+  const c = d.counts;
+  const waiting = st.tab === 'waiting'; const leftOut = st.tab === 'left_out'; const selectable = waiting || leftOut;
+  document.getElementById('stWaiting').textContent = `${c.waiting} waiting`;
+  document.getElementById('stTabs').innerHTML = [['waiting', 'Waiting', c.waiting], ['imported', 'Imported', c.imported], ['left_out', 'Left out', c.left_out], ['all', 'All', c.waiting + c.imported + c.left_out]]
+    .map(([k, l, n]) => `<button class="tab ${st.tab === k ? 'active' : ''}" data-tab="${k}">${l} <span class="n">(${n ?? 0})</span></button>`).join('');
+  document.getElementById('stScope').innerHTML = '<option value="">All groups</option>' + d.scopes.map((k) =>
+    `<option value="${esc(k)}" ${st.scope === k ? 'selected' : ''} data-i18n="off">${esc(k || '(no group)')} (${c.byScope[k] ?? 0})</option>`).join('');
+  const roleSel = document.getElementById('stRole');
+  const chosen = [...st.selected].map((id) => d.items.find((i) => i.id === id)).filter(Boolean);
+  const suggested = chosen.length && chosen.every((i) => i.suggestedRole === chosen[0].suggestedRole) ? chosen[0].suggestedRole : null;
+  const keepRole = roleSel.dataset.touched ? roleSel.value : (suggested || roleSel.value);
+  roleSel.innerHTML = Object.entries(d.roles).map(([k, l]) => `<option value="${k}" ${keepRole === k ? 'selected' : ''}>${l}</option>`).join('');
+  const boxes = document.getElementById('stMarketBoxes');
+  if (!boxes.children.length) boxes.innerHTML = Object.entries(d.markets).map(([k, l]) => `<label class="chk"><input type="checkbox" value="${k}"> ${l}</label>`).join('');
+  document.getElementById('stTools').hidden = !selectable;
+  document.getElementById('stImportWrap').hidden = !waiting;
+  for (const id of ['stImport', 'stLeave']) document.getElementById(id).hidden = !waiting;
+  document.getElementById('stReopen').hidden = !leftOut;
+  const n = st.selected.size;
+  for (const el of document.querySelectorAll('#stTools button .n')) el.textContent = n ? `(${n})` : '';
+  for (const id of ['stImport', 'stLeave', 'stReopen']) { const b = document.getElementById(id); b.disabled = !n; b.title = n ? '' : 'Select at least one person'; }
+  document.getElementById('stHead').innerHTML = `<tr><th>${selectable ? '<input type="checkbox" id="stAll" title="Select all on this page">' : ''}</th><th>Name</th><th>On MDM</th><th>Their data on MDM</th><th>${waiting ? 'Suggested role here' : 'Decision'}</th><th>Seen</th></tr>`;
+  document.getElementById('stRows').innerHTML = d.items.length ? d.items.map((i) => {
+    const box = selectable ? `<input type="checkbox" data-id="${i.id}" ${st.selected.has(i.id) ? 'checked' : ''} ${i.blocked ? `disabled title="${esc(i.blocked)}"` : ''}>` : '';
+    const who = `<b data-i18n="off">${esc(i.name)}</b><br><span class="muted" data-i18n="off">${esc(i.email || '—')}</span>${i.phones.length ? `<br><span class="muted" data-i18n="off">${esc(i.phones.join(', '))}</span>` : ''}`
+      + `${i.usernames.length && !(i.usernames.length === 1 && i.usernames[0] === i.email) ? `<br><span class="muted">MDM username:</span> <span data-i18n="off">${esc(i.usernames.join(', '))}</span>` : ''}`;
+    const onMdm = `<span data-i18n="off">${esc(i.role || '—')}</span> <span class="muted">·</span> <span data-i18n="off">${esc(i.scope || '—')}</span>`
+      + `<br><span class="muted">${i.markets.length ? i.markets.map((m) => `<span>${esc(d.markets[m] || m)}</span>`).join(', ') : `<span>No market in Libya, Iraq or Lebanon</span>${i.countries.length ? ` <span data-i18n="off">(${esc(i.countries.join(', '))})</span>` : ''}`}</span>`
+      + `${i.restricted ? '<br><span class="tag off">Restricted on MDM</span>' : ''}${i.lastLoginAt ? `<br><span class="muted">Last MDM sign-in</span> <span class="muted" data-i18n="off">${when(i.lastLoginAt)}</span>` : ''}`;
+    const decision = waiting
+      ? `${i.suggestedRole ? `<span>${esc(d.roles[i.suggestedRole])}</span>` : '<span class="muted">No suggestion — choose the role</span>'}${i.blocked ? `<br><span class="muted">${esc(i.blocked)}</span>` : ''}`
+      : `<b>${ST_DECISION[i.decision] || esc(i.decision)}</b> <span class="muted" data-i18n="off">${when(i.decidedAt)}</span>${i.decidedBy ? ` <span class="muted">by</span> <span data-i18n="off">${esc(i.decidedBy)}</span>` : ''}`
+        + `${i.decisionNote ? `<br><span class="muted" data-i18n="off">“${esc(i.decisionNote)}”</span>` : ''}`
+        + `${i.user ? `<br><span>${esc(d.roles[i.user.role] || i.user.role)}</span> <span class="muted">·</span> <span>${i.user.markets.map((m) => d.markets[m] || m).map(esc).join(', ') || '—'}</span>${i.user.active ? '' : ' <span class="tag off">switched off</span>'}${i.outcome.linked ? ' <span class="tag">linked to the account already here</span>' : ''}` : ''}`;
+    return `<tr><td>${box}</td><td>${who}</td><td>${onMdm}</td><td>${onMdmCell(i)}</td><td>${decision}</td>`
+      + `<td class="muted"><span data-i18n="off">${i.seenCount}×</span> · <span>last seen</span> <span data-i18n="off">${when(i.lastSeenAt)}</span></td></tr>`;
+  }).join('') : `<tr><td colspan="6" class="muted">${waiting ? (c.waiting + c.imported + c.left_out ? 'Nobody waiting — everyone MDM lists is imported or left out.' : 'No users read from MDM yet — run a sync. If MDM refused the call, the status card above says so.') : 'Nothing here yet.'}</td></tr>`;
+  for (const b of document.querySelectorAll('#stTabs .tab')) b.onclick = () => { st.tab = b.dataset.tab; st.selected.clear(); document.getElementById('stMsg').innerHTML = ''; loadStaff().catch(showStErr); };
+  const all = document.getElementById('stAll');
+  if (all) all.onchange = () => { for (const i of d.items) if (!i.blocked) { if (all.checked) st.selected.add(i.id); else st.selected.delete(i.id); } renderStaff(); };
+  for (const cb of document.querySelectorAll('#stRows input[type=checkbox]')) cb.onchange = () => { if (cb.checked) st.selected.add(cb.dataset.id); else st.selected.delete(cb.dataset.id); renderStaff(); };
+  I18N.apply(document.getElementById('staff'));
+}
+
+async function decideStaff(action) {
+  const d = st.data; const ids = [...st.selected]; if (!d || !ids.length) return;
+  const t = I18N.t;
+  const role = document.getElementById('stRole').value;
+  const markets = [...document.querySelectorAll('#stMarketBoxes input:checked')].map((b) => b.value);
+  const note = document.getElementById('stNote').value.trim() || null;
+  const lines = [t(`${ids.length} people selected.`)];
+  if (action === 'import') {
+    lines.push(t('Import them into this app?'), `${t('Role here:')} ${t(d.roles[role] || role)}`,
+      `${t('Markets:')} ${markets.length ? markets.map((m) => t(d.markets[m])).join(', ') : t('as MDM lists them')}`,
+      t('Each gets an account here and signs in with their MDM username and password. The merchants MDM holds them responsible for become their leads, the sellers MDM names them account manager of go to their book, and MDM\'s join history is in each conversation.'));
+  } else if (action === 'leave_out') lines.push(t('Leave them out?'), t('They stay listed under "Left out" and can be put back any time.'));
+  else lines.push(t('Put them back on the list?'));
+  if (!confirm(lines.join('\n'))) return;
+  for (const id of ['stImport', 'stLeave', 'stReopen']) document.getElementById(id).disabled = true;
+  try {
+    const r = await API.post('/api/integrations/mdm/staff/decide', { ids, action, role: action === 'import' ? role : undefined, markets: markets.length ? markets : undefined, note });
+    const failed = r.results.filter((x) => !x.ok);
+    document.getElementById('stMsg').innerHTML = `<div class="msg ${r.failed ? (r.done ? 'off' : 'fail') : 'on'}"><span>${esc(t(`${r.done} done, ${r.failed} not done.`))}</span> <span>${esc(t('One audit entry records this run.'))}</span>`
+      + `${action === 'import' && r.done ? ` <span>${esc(t(`${r.aligned.leads} leads and ${r.aligned.sellers} sellers given to them.`))}</span>` : ''}`
+      + `${failed.length ? `<div style="margin-top:6px"><b>${esc(t('Not done:'))}</b><ul>${failed.slice(0, 30).map((x) => `<li><span data-i18n="off">${esc(x.name || x.mdmRef || x.id)}</span> — <span>${esc(x.reason)}</span></li>`).join('')}</ul></div>` : ''}</div>`;
+    st.selected.clear(); document.getElementById('stNote').value = '';
+    st.loadedAt = 0; ac.loadedAt = 0;
+    await load();
+  } catch (e) { showStErr(e); renderStaff(); }
+}
+
+// ───────── Accounts: everyone who can sign in ─────────
+const ac = { data: null, loadedAt: 0 };
+const ROLE_LABEL = { OA_AGENT: 'Onboarding agent', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', ADMIN: 'Administrator', ACCOUNT_MANAGER: 'Account manager', READ_ONLY: 'Read-only' };
+const showAcErr = (e) => { document.getElementById('acMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
+
+async function loadAccounts() {
+  ac.data = await API.get('/api/admin/users');
+  ac.loadedAt = Date.now();
+  renderAccounts();
+}
+
+function renderAccounts() {
+  const rows = ac.data; if (!rows) return;
+  document.getElementById('acRows').innerHTML = rows.map((u) => {
+    const demo = /@mdm\.local$/.test(u.email);
+    const signin = `<span data-i18n="off">${esc(u.email)}</span>${u.mdmUsernames.length && !(u.mdmUsernames.length === 1 && u.mdmUsernames[0] === u.email) ? `<br><span class="muted">MDM username:</span> <span data-i18n="off">${esc(u.mdmUsernames.join(', '))}</span>` : ''}`
+      + `<br><span class="muted">${u.source === 'mdm' ? (u.hasPassword ? 'MDM password, or the one set here' : 'MDM password') : (u.hasPassword ? 'Password set here' : 'No password yet')}</span>`;
+    const work = u.role === 'OA_AGENT' ? `<span data-i18n="off">${u.openLeads}</span> <span>open leads</span>` : u.role === 'ACCOUNT_MANAGER' ? `<span data-i18n="off">${u.bookSize}</span> <span>sellers in the book</span>` : '<span class="muted">—</span>';
+    const status = `${u.active ? '<span class="tag">active</span>' : '<span class="tag off">switched off</span>'}${u.restrictedOnMdm ? ' <span class="tag off">restricted on MDM</span>' : ''}`;
+    const from = u.source === 'mdm' ? `<span class="tag mdm">MDM</span>${u.mdmRole ? `<br><span class="muted" data-i18n="off">${esc(u.mdmRole)}${u.mdmScope ? ` · ${esc(u.mdmScope)}` : ''}</span>` : ''}` : demo ? '<span class="tag demo">demo account</span>' : '<span class="tag">created here</span>';
+    const actions = `<button class="btn" data-act="password" data-id="${u.id}">Set password</button> `
+      + (u.active ? `<button class="btn" data-act="off" data-id="${u.id}">Switch off</button>` : `<button class="btn" data-act="on" data-id="${u.id}">Switch on</button>`);
+    return `<tr><td><b data-i18n="off">${esc(u.name)}</b></td><td>${signin}</td><td><span>${esc(ROLE_LABEL[u.role] || u.role)}</span><br><span class="muted">${u.markets.map((m) => `<span>${esc(MARKET_NAME[m] || m)}</span>`).join(', ') || '—'}</span></td><td>${from}</td><td>${work}</td><td>${status}</td><td style="white-space:nowrap">${actions}</td></tr>`;
+  }).join('') || '<tr><td colspan="7" class="muted">No accounts.</td></tr>';
+  for (const b of document.querySelectorAll('#acRows button')) b.onclick = () => accountAction(b.dataset.act, b.dataset.id);
+  I18N.apply(document.getElementById('accounts'));
+}
+
+async function accountAction(act, id) {
+  const u = ac.data.find((x) => x.id === id); if (!u) return;
+  const t = I18N.t;
+  try {
+    if (act === 'password') {
+      const pw = prompt(`${t('New password for')} ${u.name} ${t('(at least 8 characters). It is stored hashed and never shown again.')}`);
+      if (pw == null) return;
+      const r = await API.post(`/api/admin/users/${id}/password`, { password: pw });
+      document.getElementById('acMsg').innerHTML = `<div class="msg on"><span>${esc(t('Password set.'))}</span>${r.mdmSignIn ? ` <span>${esc(t('Their MDM password still works too.'))}</span>` : ''}</div>`;
+      ac.loadedAt = 0; await loadAccounts();
+      return;
+    }
+    const off = act === 'off';
+    const reason = prompt(off
+      ? `${t('Switch off')} ${u.name}? ${t(u.role === 'OA_AGENT' ? 'Their open leads go to the holding queue and are assigned again by capacity.' : u.role === 'ACCOUNT_MANAGER' ? 'Each of their sellers goes to the same-market, smallest-book manager, or stays unassigned with you alerted.' : 'They can no longer sign in.')} ${t('Reason (written to the audit log):')}`
+      : `${t('Switch on')} ${u.name}? ${t('Reason (written to the audit log):')}`);
+    if (!reason) return;
+    const r = await API.post(`/api/admin/users/${id}/active`, { active: !off, reason });
+    document.getElementById('acMsg').innerHTML = `<div class="msg on"><span>${esc(t(off ? 'Account switched off.' : 'Account switched on.'))}</span>${off ? ` <span>${esc(t(`${r.leadsHeld} leads to the holding queue, ${r.sellersMoved} sellers moved, ${r.sellersUnassigned} sellers left unassigned.`))}</span>` : ''}</div>`;
+    ac.loadedAt = 0; st.loadedAt = 0; await load();
+  } catch (e) { showAcErr(e); }
+}
+
 let timer = null;
 // While a sync runs, the page re-reads its progress every 3 seconds (and the skipped list every 10).
 function follow() {
@@ -358,7 +545,8 @@ function follow() {
 }
 
 async function load() {
-  const [status] = await Promise.all([API.get('/api/integrations/status'), Date.now() - sk.loadedAt > 10000 ? loadSkipped().catch(showSkErr) : null]);
+  const [status] = await Promise.all([API.get('/api/integrations/status'), Date.now() - sk.loadedAt > 10000 ? loadSkipped().catch(showSkErr) : null,
+    Date.now() - st.loadedAt > 10000 ? loadStaff().catch(showStErr) : null, Date.now() - ac.loadedAt > 10000 ? loadAccounts().catch(showAcErr) : null]);
   state.status = status;
   renderStatus(); I18N.apply(document.body);
   follow();
@@ -366,7 +554,7 @@ async function load() {
 
 window.render = function () {
   document.getElementById('lang').innerHTML = I18N.toggleHTML();
-  renderStatus(); renderSkipped();
+  renderStatus(); renderSkipped(); renderStaff(); renderAccounts();
 };
 
 (async () => {
@@ -385,6 +573,13 @@ window.render = function () {
   document.getElementById('skLeave').onclick = () => decide('leave_out');
   document.getElementById('skReopen').onclick = () => decide('reopen');
   document.getElementById('skReason').onchange = (e) => { sk.reason = e.target.value; loadSkipped().catch(showSkErr); };
+  document.getElementById('stImport').onclick = () => decideStaff('import');
+  document.getElementById('stLeave').onclick = () => decideStaff('leave_out');
+  document.getElementById('stReopen').onclick = () => decideStaff('reopen');
+  document.getElementById('stRole').onchange = (e) => { e.target.dataset.touched = '1'; };
+  document.getElementById('stScope').onchange = (e) => { st.scope = e.target.value; loadStaff().catch(showStErr); };
+  let stTimer = null;
+  document.getElementById('stQ').oninput = (e) => { clearTimeout(stTimer); stTimer = setTimeout(() => { st.q = e.target.value.trim(); loadStaff().catch(showStErr); }, 300); };
   let qTimer = null;
   document.getElementById('skQ').oninput = (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { sk.q = e.target.value.trim(); loadSkipped().catch(showSkErr); }, 300); };
   window.render();

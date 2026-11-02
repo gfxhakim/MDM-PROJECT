@@ -38,7 +38,8 @@ const suggestMarket = (h) => [h.country, ...parse(h.countries, [])].find((c) => 
 const snapshot = (row) => ({
   mdmRef: row.mdmRef, name: row.name ?? null, phone: row.phone ?? null, country: row.country ?? null, countryId: row.countryId ?? null,
   places: row.places ?? [], joinStatus: row.joinStatus ?? null, joinStatusDate: row.joinStatusDate ?? null, createdAt: row.createdAt ?? null,
-  updatedAt: row.updatedAt ?? null, utm: row.utm ?? null, accountManagerRef: row.accountManagerRef ?? null,
+  updatedAt: row.updatedAt ?? null, utm: row.utm ?? null, accountManagerRef: row.accountManagerRef ?? null, accountManagerName: row.accountManagerName ?? null,
+  responsibleRef: row.responsibleRef ?? null, responsibleName: row.responsibleName ?? null, history: row.history ?? [],
 });
 
 /** Refs the pull watches: a waiting or left-out seller that now imports by the normal rules is marked imported. */
@@ -54,7 +55,7 @@ export async function rememberSkipped(row, result, { runId = null, now = new Dat
     reasonCode: REASONS[result.code] ? result.code : 'other', reason: String(result.reason ?? ''),
     name: row.name ?? null, phone: row.phone ?? null, country: row.country ?? null, countries: JSON.stringify(row.countries ?? []), countryId: row.countryId ?? null,
     joinStatus: row.joinStatus ?? null, joinStatusDate: dateOr(row.joinStatusDate), registeredAt: dateOr(row.createdAt), accountManagerRef: row.accountManagerRef ?? null,
-    utm: row.utm ?? null, platform: JSON.stringify(snapshot(row)), lastSeenAt: now, runId,
+    responsibleRef: row.responsibleRef ?? null, utm: row.utm ?? null, platform: JSON.stringify(snapshot(row)), lastSeenAt: now, runId,
   };
   const existing = await db.mdmSkipped.findUnique({ where: { mdmRef } });
   if (!existing) return db.mdmSkipped.create({ data: { mdmRef, firstSeenAt: now, ...data } });
