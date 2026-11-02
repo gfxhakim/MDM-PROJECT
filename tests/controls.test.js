@@ -114,3 +114,14 @@ test('each playbook step carries the server verdict: open gates tickable, closed
     assert.ok(pb.some((x) => x.gateOpen && x.canTick), `${who} can tick a step whose gate is open`);
   }
 });
+
+test('every page asks for its scripts by content fingerprint, so a deploy never mixes an old script with a new page', async () => {
+  for (const path of ['/', '/oa', '/am', '/integrations']) {
+    const html = await (await fetch(app.base + path)).text();
+    const plain = [...html.matchAll(/(?:src|href)="\/assets\/([^"]+)"/g)].map((m) => m[1]).filter((u) => !/\?v=[0-9a-f]{10}$/.test(u));
+    assert.deepEqual(plain, [], `${path} loads assets without a fingerprint: ${plain.join(', ')}`);
+  }
+  const html = await (await fetch(app.base + '/oa')).text();
+  const url = html.match(/\/assets\/oa-adapter\.js\?v=[0-9a-f]{10}/)[0];
+  assert.equal((await fetch(app.base + url)).status, 200);
+});
