@@ -92,9 +92,11 @@ function view(h, users) {
  * Also returns the counts for the tabs and what the Admin needs to decide: markets, and each
  * account manager with their book against the ceiling (AM 12.4 shows that against each option).
  */
-export async function listSkipped({ decision = 'waiting', reason = null, q = null } = {}, db = prisma) {
+export async function listSkipped({ decision = 'waiting', reason = null, q = null, from = null, to = null } = {}, db = prisma) {
   const where = decision === 'all' ? {} : decision === 'waiting' ? { decision: null } : { decision: String(decision) };
   if (reason) where.reasonCode = String(reason);
+  // the date the seller registered on MDM
+  if (from || to) where.registeredAt = { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) };
   const s = String(q ?? '').trim();
   if (s) where.OR = [{ mdmRef: { contains: s } }, { name: { contains: s } }, { phone: { contains: s } }];
   const [items, people, byReason, byDecision, { values: config }, ams] = await Promise.all([
@@ -170,7 +172,7 @@ export async function decideSkipped(user, { ids, action, market = null, managerI
       if (await db.seller.findUnique({ where: { mdmRef: h.mdmRef } })) { out.reason = 'Already a seller here with this platform id.'; continue; }
       if (action === 'lead') {
         const r = await registerMerchant({ phone: e164, name: h.name, country: m, sourceUtm: h.utm ?? 'mdm_platform' }, { now }, db);
-        await db.contact.update({ where: { id: r.contact.id }, data: { mdmRef: h.mdmRef } });
+        await db.contact.update({ where: { id: r.contact.id }, data: { mdmRef: h.mdmRef, ...(h.registeredAt ? { mdmCreatedAt: h.registeredAt } : {}) } });
         const outcome = { market: m, contactId: r.contact.id, ticketId: r.ticket?.id ?? null, assigned: !!r.ticket?.assigneeId, registration: r.outcome };
         await db.mdmSkipped.update({ where: { id }, data: { decision: 'lead', decidedById: user.id, decidedAt: now, decisionNote: written, outcome: JSON.stringify(outcome) } });
         out.ok = true; out.contactId = r.contact.id; out.ticketId = outcome.ticketId;
@@ -186,7 +188,7 @@ export async function decideSkipped(user, { ids, action, market = null, managerI
       const activatedAt = dateOr(h.joinStatusDate) ?? dateOr(h.registeredAt) ?? now;
       const { seller, ownership: placed } = await createSellerRecord({ phone: e164, name: h.name || e164, market: m, mdmRef: h.mdmRef, source: 'mdm_platform', activatedAt,
         welcomeCallAt: null, mirror: {}, managerId: named?.id ?? null, ownership, lastSyncedAt: null }, { actorId: user.id, config, managers }, db);
-      await db.contact.update({ where: { id: seller.contactId }, data: { mdmRef: h.mdmRef } });
+      await db.contact.update({ where: { id: seller.contactId }, data: { mdmRef: h.mdmRef, ...(h.registeredAt ? { mdmCreatedAt: h.registeredAt } : {}) } });
       const outcome = { market: m, sellerId: seller.id, contactId: seller.contactId, ownership: placed };
       await db.mdmSkipped.update({ where: { id }, data: { decision: 'placed', decidedById: user.id, decidedAt: now, decisionNote: written, outcome: JSON.stringify(outcome), figuresAt: null } });
       out.ok = true; out.sellerId = seller.id; out.outcome = `${MARKET_NAMES[m]} book · ${placed}`;

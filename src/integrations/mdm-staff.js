@@ -58,7 +58,9 @@ async function syncUser(user, staff, { now = new Date() } = {}, db = prisma) {
     mdmRef: staff.mdmRef, mdmRole: staff.role, mdmScope: staff.scope, mdmUsernames: staff.usernames, mdmManagerRef: staff.managerRef ?? user.mdmManagerRef,
     phones: staff.phones, mdmSyncedAt: now, name: staff.name || user.name, ...(markets.length ? { markets: JSON.stringify(markets) } : {}),
   };
-  if (staff.restricted && user.active) {
+  if (user.removedAt) {
+    // removed here by an Admin: MDM's restriction flag no longer switches it on or off
+  } else if (staff.restricted && user.active) {
     data.active = false;
     await logEvent({ entityType: 'user', entityId: user.id, action: 'user.deactivated', before: { active: true }, after: { active: false }, reason: 'Restricted on MDM' }, db);
   } else if (!staff.restricted && !user.active) {
@@ -135,10 +137,12 @@ function view(h, { users, leads, skipped, sellers }) {
 }
 
 /** The staff list for the page. decision: waiting (default) | imported | left_out | all. */
-export async function listStaff({ decision = 'waiting', scope = null, q = null } = {}, db = prisma) {
+export async function listStaff({ decision = 'waiting', scope = null, q = null, from = null, to = null } = {}, db = prisma) {
   const where = {
     ...(decision === 'all' ? {} : decision === 'waiting' ? { decision: null } : { decision }),
     ...(scope ? { scope } : {}),
+    // the date the person's user was created on MDM
+    ...(from || to ? { mdmCreatedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
     ...(q ? { OR: [{ name: { contains: q } }, { email: { contains: q } }, { mdmRef: { contains: q } }, { phones: { contains: q } }, { usernames: { contains: q } }] } : {}),
   };
   const [rows, all, userRows, leadRows, skippedRows, sellerRows] = await Promise.all([
@@ -289,8 +293,10 @@ export async function decideStaff(user, { ids, action, role = null, markets = nu
       let linked = false;
       if (account) {
         linked = true;
-        const before = { role: account.role, markets: account.markets };
-        account = await db.user.update({ where: { id: account.id }, data: { ...common, role, markets: JSON.stringify(marketsHere), name: h.name || account.name } });
+        const before = { role: account.role, markets: account.markets, removed: !!account.removedAt };
+        // importing someone whose account was removed here puts it back
+        const back = account.removedAt ? { removedAt: null, active: !h.restricted } : {};
+        account = await db.user.update({ where: { id: account.id }, data: { ...common, ...back, role, markets: JSON.stringify(marketsHere), name: h.name || account.name } });
         await logEvent({ actorId: user.id, entityType: 'user', entityId: account.id, action: 'user.linked_mdm', before, after: { role, markets: marketsHere, mdmRef: h.mdmRef }, reason: note ?? 'Imported from MDM' }, db);
       } else {
         account = await db.user.create({ data: { email: h.email, name: h.name || h.email, role, markets: JSON.stringify(marketsHere), passwordHash: '', active: !h.restricted, ...common } });

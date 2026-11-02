@@ -25,6 +25,7 @@ function sellerView(s) {
   return {
     id: s.id, mdmRef: s.mdmRef, contactId: s.contactId, name: s.contact?.name, nameAr: s.contact?.nameAr, phone: s.contact?.phone,
     market: s.market, joinStatus: s.joinStatus, activatedAt: s.activatedAt, assignedAccountManagerId: s.assignedAccountManagerId,
+    registeredAt: s.contact?.mdmCreatedAt ?? s.contact?.createdAt ?? null, // when the merchant entered MDM (date filters)
     stage: s.stage, healthScore: s.healthScore, healthBand: s.healthBand, healthStale: s.healthStale, healthComputedAt: s.healthComputedAt,
     metrics: {
       weeklyOrders: json(s.weeklyOrders, []), totalOrders: s.totalOrders, deliveryRate: s.deliveryRate, returnRate: s.returnRate,

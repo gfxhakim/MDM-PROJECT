@@ -116,7 +116,7 @@
       id: t.id, ticket: '#' + t.id.slice(-6).toUpperCase(), contactCode: 'CT-' + c.id.slice(-5).toUpperCase(), conv: conv ? 'C-' + conv.id.slice(-5).toUpperCase() : '—',
       name: c.name, ar: c.nameAr || '', country: COUNTRY[c.country] || c.country, city: '—', store: '—', phone: c.phone, email: '',
       source: h.source || c.sourceUtm || 'whatsapp', channel: conv?.channel === 'portal' ? 'portal' : 'whatsapp', utm: c.sourceUtm || '—',
-      registeredAt: t.createdAt, ownerId: t.assigneeId, status: STATUS_MAP[t.status] || t.status, stage: stageOf(t),
+      registeredAt: t.createdAt, enteredAt: c.mdmCreatedAt || c.createdAt || t.createdAt, ownerId: t.assigneeId, status: STATUS_MAP[t.status] || t.status, stage: stageOf(t),
       // The prototype's counter is the no-answer cadence; answered calls are not cadence attempts.
       attempts: t.status === 'failed_to_contact' || (t.status === 'cold_lead' && (t.tags || []).includes('oa_cold_no_answer')) ? t.attemptNo : 0,
       quiet: t.followupNo, nextAt: t.dueAt,
@@ -196,8 +196,8 @@
     TPL_STATE = Object.fromEntries(templates.map((t) => [t.key, { on: t.enabled, used: usage.sends[t.key] ?? 0, status: t.status }])); // eslint-disable-line no-global-assign
     for (const t of TEMPLATES) if (!TPL_STATE[t.key]) TPL_STATE[t.key] = { on: false, used: 0 };
     X.elevations = elevations;
-    AUDIT.length = 0;
-    for (const e of audit) {
+    if (!X.auditFiltered) AUDIT.length = 0; // a filtered audit view keeps what the filter read
+    for (const e of X.auditFiltered ? [] : audit) {
       AUDIT.push({
         at: new Date(e.createdAt), who: e.actorId ? nameOf(e.actorId) : 'Rule (automation)',
         what: `${esc(e.action)} <code>${esc(e.entityType)} ${esc(String(e.entityId).slice(-6))}</code>${e.reason ? ' — ' + esc(e.reason) : ''}`,
@@ -584,15 +584,43 @@
   window.togPerm = function () { toast('Roles and grants are fixed by the specification; changes are an Administrator release.', 'warn'); };
 
   // ───────────── queue filters ─────────────
-  // The prototype's funnel button names them: country, source, channel, window state, owner. A
-  // filter narrows the current view after its own condition and the search; the rail counts stay
-  // the view's. The choice lives in S, so a language switch or a route change keeps it (OA 6.3,
-  // AC-OA-24). "Save this view" (a personal saved view, OA 6.3) is the next step, not built yet.
+  // The prototype's funnel buttons name them: country, source, channel, window state, owner (the
+  // queue), plus age (All Leads). Age is a date range on when the merchant registered — on MDM, or
+  // here for a merchant who came in through WhatsApp — with quick choices and a custom range (the
+  // Admin's request, 2 Nov). A filter narrows the current view after its own condition and the
+  // search; the rail counts stay the view's. The choice lives in S, so a language switch or a route
+  // change keeps it (OA 6.3, AC-OA-24). Changing a filter clears the selection, so a bulk action only
+  // ever acts on rows the Admin can see. "Save this view" (OA 6.3) is not built yet.
   const FILTER_KEYS = ['country', 'source', 'channel', 'win', 'owner'];
-  S.filters = S.filters || { country: '', source: '', channel: '', win: '', owner: '' };
+  S.filters = S.filters || { country: '', source: '', channel: '', win: '', owner: '', when: '', from: '', to: '' };
   S.filtersOpen = false;
   const WIN_LABEL = { open: 'Open', soon: 'Closing soon', shut: 'Template only' };
-  const FILTER_LABEL = { country: 'Country', source: 'Source', channel: 'Channel', win: 'Window state', owner: 'Owner' };
+  const FILTER_LABEL = { country: 'Country', source: 'Source', channel: 'Channel', win: 'Window state', owner: 'Owner', when: 'Registered' };
+  const WHEN = [['', 'Any time'], ['today', 'Today'], ['yesterday', 'Yesterday'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Custom range']];
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  /** The range a choice means, in the viewer's own calendar days: { from, to } as YYYY-MM-DD. */
+  function whenRange(when, from, to) {
+    const t = new Date(); const day = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return ymd(d); };
+    switch (when) {
+      case 'today': return { from: ymd(t), to: ymd(t) };
+      case 'yesterday': return { from: day(-1), to: day(-1) };
+      case '7': return { from: day(-6), to: ymd(t) };
+      case '30': return { from: day(-29), to: ymd(t) };
+      case 'month': return { from: ymd(new Date(t.getFullYear(), t.getMonth(), 1)), to: ymd(t) };
+      case 'lastmonth': return { from: ymd(new Date(t.getFullYear(), t.getMonth() - 1, 1)), to: ymd(new Date(t.getFullYear(), t.getMonth(), 0)) };
+      case 'custom': return { from: from || '', to: to || '' };
+      default: return { from: '', to: '' };
+    }
+  }
+  function inRange(at) {
+    const f = S.filters; const r = whenRange(f.when, f.from, f.to);
+    if (!r.from && !r.to) return true;
+    if (!at) return false;
+    const d = new Date(at);
+    if (r.from && d < new Date(r.from + 'T00:00:00')) return false;
+    if (r.to && d > new Date(r.to + 'T23:59:59.999')) return false;
+    return true;
+  }
   const uniq = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
   function filterOptions() {
     return {
@@ -609,41 +637,177 @@
     if (f.source && l.source !== f.source) return false;
     if (f.channel && l.channel !== f.channel) return false;
     if (f.win && !(isOpen(l) && winState(l) === f.win)) return false;
+    if (!inRange(l.enteredAt)) return false;
     if (f.owner === 'me') return l.ownerId === ME;
     if (f.owner === 'none') return !l.ownerId && isOpen(l);
     if (f.owner) return l.ownerId === f.owner;
     return true;
   }
-  const activeFilters = () => FILTER_KEYS.filter((k) => S.filters[k]);
-  const filterText = (k) => { const v = S.filters[k]; const o = filterOptions()[k].find((x) => x[0] === v); return o ? o[1] : v; };
+  const dateSet = () => { const r = whenRange(S.filters.when, S.filters.from, S.filters.to); return !!(r.from || r.to); };
+  const activeFilters = () => [...FILTER_KEYS.filter((k) => S.filters[k]), ...(dateSet() ? ['when'] : [])];
+  const fmtDay = (s) => (s ? new Date(s + 'T12:00:00').toLocaleDateString(I18N.lang === 'ar' ? 'ar' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '…');
+  const filterText = (k) => {
+    if (k === 'when') {
+      const f = S.filters;
+      if (f.when !== 'custom') return WHEN.find((w) => w[0] === f.when)?.[1] ?? '';
+      return `${fmtDay(f.from)} – ${fmtDay(f.to)}`;
+    }
+    const v = S.filters[k]; const o = filterOptions()[k].find((x) => x[0] === v); return o ? o[1] : v;
+  };
   const protoFiltered = window.filtered;
   window.filtered = function () { return protoFiltered().filter(passesFilters); };
-  X.setFilter = function (k, v) { if (FILTER_KEYS.includes(k)) { S.filters[k] = v; render(); } };
-  X.clearFilters = function () { for (const k of FILTER_KEYS) S.filters[k] = ''; render(); };
+  const protoAdmFiltered = window.admFiltered;
+  window.admFiltered = function () { return protoAdmFiltered().filter(passesFilters); };
+  X.setFilter = function (k, v) {
+    if (![...FILTER_KEYS, 'when', 'from', 'to'].includes(k)) return;
+    S.filters[k] = v;
+    if (k === 'when' && v === 'custom' && !S.filters.from && !S.filters.to) { const r = whenRange('30'); S.filters.from = r.from; S.filters.to = r.to; }
+    S.sel = []; render();
+  };
+  X.clearFilters = function () { for (const k of [...FILTER_KEYS, 'when', 'from', 'to']) S.filters[k] = ''; S.sel = []; render(); };
   X.toggleFilters = function () { S.filtersOpen = !S.filtersOpen; render(); };
+  const lbl = (text, inner) => `<label class="fl" style="margin:0;display:flex;flex-direction:column;gap:4px">${text}${inner}</label>`;
+  function datePart() {
+    const f = S.filters;
+    const opts = WHEN.map(([v, t]) => `<option value="${v}" ${f.when === v ? 'selected' : ''}>${t}</option>`).join('');
+    return lbl(FILTER_LABEL.when, `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setFilter('when',this.value)">${opts}</select>`)
+      + (f.when === 'custom'
+        ? lbl('From', `<input class="fi" type="date" style="padding:5px 8px" value="${esc(f.from)}" ${f.to ? `max="${esc(f.to)}"` : ''} onchange="MDM.setFilter('from',this.value)">`)
+          + lbl('To', `<input class="fi" type="date" style="padding:5px 8px" value="${esc(f.to)}" ${f.from ? `min="${esc(f.from)}"` : ''} onchange="MDM.setFilter('to',this.value)">`)
+        : '');
+  }
   function filterPanel() {
     const o = filterOptions(); const f = S.filters; const n = activeFilters().length;
-    const sel = (k) => `<label class="fl" style="margin:0;display:flex;flex-direction:column;gap:4px">${FILTER_LABEL[k]}
-      <select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setFilter('${k}',this.value)"><option value="">All</option>
-      ${o[k].map(([v, t]) => `<option value="${esc(v)}" ${f[k] === v ? 'selected' : ''} ${k === 'source' ? 'data-i18n="off"' : ''}>${esc(t)}</option>`).join('')}</select></label>`;
+    const sel = (k) => lbl(FILTER_LABEL[k], `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setFilter('${k}',this.value)"><option value="">All</option>
+      ${o[k].map(([v, t]) => `<option value="${esc(v)}" ${f[k] === v ? 'selected' : ''} ${k === 'source' ? 'data-i18n="off"' : ''}>${esc(t)}</option>`).join('')}</select>`);
     return `<div class="card" id="qfilters" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;padding:12px 14px;margin:-4px 0 14px">
-      ${FILTER_KEYS.map(sel).join('')}<span style="flex:1"></span>
-      <button class="btn btn-ghost btn-sm" onclick="MDM.clearFilters()" ${n ? '' : 'disabled title="No filter is set"'}>Clear filters</button></div>`;
+      ${FILTER_KEYS.map(sel).join('')}${datePart()}<span style="flex:1"></span>
+      <button class="btn btn-ghost btn-sm" onclick="MDM.clearFilters()" ${n ? '' : 'disabled title="No filter is set"'}>Clear filters</button>
+      <div class="tiny muted" style="flex-basis:100%">Registered = the day the merchant registered on MDM (or wrote to us first, for a merchant who came in here).</div></div>`;
   }
   function filterLine() {
     return `<div class="tiny muted" id="qfilters-line" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-6px 0 12px">
-      <span>Filters:</span>${activeFilters().map((k) => `<span class="chip"><span>${FILTER_LABEL[k]}</span> · <span ${k === 'source' ? 'data-i18n="off"' : ''}>${esc(filterText(k))}</span></span>`).join('')}
+      <span>Filters:</span>${activeFilters().map((k) => `<span class="chip"><span>${FILTER_LABEL[k]}</span> · <span ${k === 'source' || (k === 'when' && S.filters.when === 'custom') ? 'data-i18n="off"' : ''}>${esc(filterText(k))}</span></span>`).join('')}
       <button class="btn btn-ghost btn-sm" onclick="MDM.clearFilters()">Clear filters</button></div>`;
   }
-  const protoViewQueue = window.viewQueue;
-  window.viewQueue = function () {
+  const funnel = (html, toastText) => {
     const n = activeFilters().length;
-    let html = protoViewQueue();
-    html = html.replace("<button class=\"icon-btn red\" onclick=\"toast('Filters — country, source, channel, window state, owner')\">",
-      `<button class="icon-btn red" title="Filters — country, source, channel, window state, owner" onclick="MDM.toggleFilters()" style="position:relative${S.filtersOpen ? ';outline:3px solid rgba(220,38,38,.25)' : ''}">`
+    html = html.replace(`<button class="icon-btn red" onclick="toast('${toastText}')">`,
+      `<button class="icon-btn red" title="${toastText}" onclick="MDM.toggleFilters()" style="position:relative${S.filtersOpen ? ';outline:3px solid rgba(220,38,38,.25)' : ''}">`
       + (n ? `<span class="num" style="position:absolute;top:-6px;inset-inline-end:-6px;background:#111;color:#fff;border-radius:999px;font-size:10px;font-weight:700;padding:1px 5px;line-height:14px">${n}</span>` : ''));
     if (S.filtersOpen) html = html.replace('<div class="tbl-wrap">', filterPanel() + '<div class="tbl-wrap">');
     else if (n) html = html.replace('<div class="tbl-wrap">', filterLine() + '<div class="tbl-wrap">');
+    return html;
+  };
+  const protoViewQueue = window.viewQueue;
+  window.viewQueue = function () { return funnel(protoViewQueue(), 'Filters — country, source, channel, window state, owner'); };
+
+  // ───────────── deleting leads (Admin, All Leads) ─────────────
+  // The merchant is deleted here only — MDM is never touched — and the sync leaves it out until it is
+  // restored on the Integrations page (the Admin's choice, 2 Nov). At most 200 per run, a written
+  // reason, the number typed to confirm; each row is reported on its own, one audit entry per run.
+  const MAX_DELETE = 200;
+  const canDelete = () => X.grants?.['records.delete'] === true;
+  const protoViewAdminLeads = window.viewAdminLeads;
+  window.viewAdminLeads = function () {
+    let html = funnel(protoViewAdminLeads(), 'Filters — country, source, channel, owner, window state, age');
+    if (S.sel.length) {
+      const over = S.sel.length > MAX_DELETE;
+      const del = canDelete()
+        ? (over
+          ? `<span style="display:inline-flex;flex-direction:column;gap:2px"><button class="btn btn-ghost btn-sm" disabled style="color:#B42318">${ic('x', 12)} Delete</button><span class="why">at most ${MAX_DELETE} per run — narrow the filter</span></span>`
+          : `<button class="btn btn-ghost btn-sm" style="color:#B42318" onclick="MDM.askDelete('leads')">${ic('x', 12)} Delete</button>`)
+        : `<span style="display:inline-flex;flex-direction:column;gap:2px"><button class="btn btn-ghost btn-sm" disabled>${ic('x', 12)} Delete</button><span class="why">reserved to the Administrator</span></span>`;
+      html = html.replace('<button class="btn btn-ghost btn-sm" onclick="S.sel=[];render()">Clear</button>', `${del}\n    <button class="btn btn-ghost btn-sm" onclick="S.sel=[];render()">Clear</button>`);
+    }
+    return html;
+  };
+  X.askDelete = function (kind) {
+    const ids = S.sel.slice(); const n = ids.length;
+    if (!n) return;
+    const sellers = kind === 'leads' ? ids.map((id) => S.leads.find((l) => l.id === id)).filter((l) => l && l.status === 'activated').length : 0;
+    openModal(`<div class="modal-h">${ic('x', 18)}<h3>Delete ${n} lead${n === 1 ? '' : 's'}</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b">
+        <div class="banner bn-amber tiny">${ic('shield', 14)}<div>Each merchant is deleted from this app: contact, conversation and messages, tickets and tasks${sellers ? ` — <b>${sellers}</b> of them are also sellers in a book, and their seller record goes too` : ''}. MDM keeps them; the sync leaves them out until you restore them on the Integrations page. This cannot be undone here.</div></div>
+        <label class="fl" style="margin-top:12px">Reason (written to the audit log)</label>
+        <textarea class="fi" id="m-note" rows="2" oninput="MDM.deleteReady(${n})"></textarea>
+        <label class="fl" style="margin-top:10px">Type <b class="num">${n}</b> to confirm</label>
+        <input class="fi" id="m-confirm" inputmode="numeric" autocomplete="off" oninput="MDM.deleteReady(${n})">
+      </div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" id="modal-go" disabled onclick="MDM.doDelete('${kind}')">Delete ${n}</button></div>`);
+  };
+  X.deleteReady = function (n) {
+    const ok = !!(document.getElementById('m-note')?.value || '').trim() && (document.getElementById('m-confirm')?.value || '').trim() === String(n);
+    const b = document.getElementById('modal-go'); if (b) b.disabled = !ok;
+  };
+  X.doDelete = function (kind) {
+    const ids = S.sel.slice(); const reason = (document.getElementById('m-note')?.value || '').trim();
+    closeModal();
+    act(async () => {
+      const r = await API.post('/api/admin/delete', { kind, ids, reason });
+      S.sel = [];
+      const bad = r.results.filter((x) => !x.ok);
+      toast(`${r.done} deleted${bad.length ? ` · ${bad.length} not deleted: ${bad[0].reason}` : ''}`, bad.length ? 'warn' : 'ok');
+    });
+  };
+
+  // ───────────── audit filter (Admin) ─────────────
+  // The prototype's button: "Filtered by actor, entity, kind and date range". The log is read from
+  // the server with the actor, entity and dates; the kind is the prototype's own four chips.
+  S.auditF = S.auditF || { actor: '', entity: '', kind: '', when: '', from: '', to: '', open: false, loading: false };
+  const ENTITIES = [['ticket', 'Ticket'], ['contact', 'Contact'], ['seller', 'Seller'], ['conversation', 'Conversation'], ['user', 'User'], ['config', 'Configuration'], ['bulk', 'Bulk run']];
+  const KINDS = [['op', 'operation'], ['auto', 'automation'], ['cfg', 'configuration']];
+  X.auditAll = null; // the rows read for the filter (null = the console's default 100)
+  async function loadAudit() {
+    const a = S.auditF; const r = whenRange(a.when, a.from, a.to);
+    const qs = new URLSearchParams({ limit: '500' });
+    if (a.actor === 'system') qs.set('actor', 'system'); else if (a.actor) qs.set('actorId', a.actor);
+    if (a.entity) qs.set('entityType', a.entity);
+    if (r.from) qs.set('from', new Date(r.from + 'T00:00:00').toISOString());
+    if (r.to) qs.set('to', new Date(r.to + 'T23:59:59.999').toISOString());
+    a.loading = true; render();
+    try {
+      const rows = await API.get('/api/admin/audit?' + qs);
+      AUDIT.length = 0;
+      for (const e of rows) {
+        const kind = e.entityType === 'config' ? 'cfg' : e.actorId ? 'op' : 'auto';
+        if (a.kind && a.kind !== kind) continue;
+        AUDIT.push({ at: new Date(e.createdAt), who: e.actorId ? nameOf(e.actorId) : 'Rule (automation)',
+          what: `${esc(e.action)} <code>${esc(e.entityType)} ${esc(String(e.entityId).slice(-6))}</code>${e.reason ? ' — ' + esc(e.reason) : ''}`, kind });
+      }
+      X.auditFiltered = true;
+    } catch (e) { fail(e); } finally { a.loading = false; render(); }
+  }
+  const auditSet = () => !!(S.auditF.actor || S.auditF.entity || S.auditF.kind || dateSetFor(S.auditF));
+  const dateSetFor = (a) => { const r = whenRange(a.when, a.from, a.to); return !!(r.from || r.to); };
+  X.setAudit = function (k, v) {
+    S.auditF[k] = v;
+    if (k === 'when' && v === 'custom' && !S.auditF.from && !S.auditF.to) { const r = whenRange('30'); S.auditF.from = r.from; S.auditF.to = r.to; }
+    if (auditSet()) loadAudit(); else { X.auditFiltered = false; reload().then(render); }
+  };
+  X.clearAudit = function () { Object.assign(S.auditF, { actor: '', entity: '', kind: '', when: '', from: '', to: '' }); X.auditFiltered = false; reload().then(render); };
+  X.toggleAudit = function () { S.auditF.open = !S.auditF.open; render(); };
+  const protoViewAudit = window.viewAudit;
+  window.viewAudit = function () {
+    window.AUDIT_SHOW = X.auditFiltered ? 200 : 14;
+    let html = protoViewAudit();
+    const a = S.auditF;
+    html = html.replace(`<button class="btn btn-ghost" onclick="toast('Filtered by actor, entity, kind and date range')">`,
+      `<button class="btn btn-ghost" onclick="MDM.toggleAudit()" title="Filtered by actor, entity, kind and date range"${a.open ? ' style="outline:3px solid rgba(220,38,38,.2)"' : ''}>`);
+    if (a.open) {
+      const sel = (k, label, opts) => lbl(label, `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setAudit('${k}',this.value)"><option value="">All</option>${opts.map(([v, t]) => `<option value="${esc(v)}" ${a[k] === v ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`);
+      const people = [['system', 'Rule (automation)'], ...[...X.userById.values()].sort((x, y) => x.name.localeCompare(y.name)).map((u) => [u.id, u.name])];
+      const when = lbl('Date', `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setAudit('when',this.value)">${WHEN.map(([v, t]) => `<option value="${v}" ${a.when === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`)
+        + (a.when === 'custom' ? lbl('From', `<input class="fi" type="date" style="padding:5px 8px" value="${esc(a.from)}" onchange="MDM.setAudit('from',this.value)">`)
+          + lbl('To', `<input class="fi" type="date" style="padding:5px 8px" value="${esc(a.to)}" onchange="MDM.setAudit('to',this.value)">`) : '');
+      const panel = `<div class="card" id="afilters" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;padding:12px 14px;margin:0 0 14px">
+        ${sel('actor', 'Actor', people)}${sel('entity', 'Entity', ENTITIES)}${sel('kind', 'Kind', KINDS)}${when}<span style="flex:1"></span>
+        ${a.loading ? '<span class="tiny muted">Loading…</span>' : X.auditFiltered ? `<span class="tiny muted"><span class="num">${AUDIT.length}</span> <span>entries</span></span>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="MDM.clearAudit()" ${auditSet() ? '' : 'disabled title="No filter is set"'}>Clear filters</button></div>`;
+      html = html.replace('<div class="grid2">', panel + '<div class="grid2">');
+    }
     return html;
   };
 

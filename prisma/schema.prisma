@@ -36,6 +36,7 @@ model User {
   mdmManagerRef  String? // the account-manager record on MDM with the same email (sellers point at it)
   phones         String    @default("[]") // JSON array, as MDM lists them
   mdmSyncedAt    DateTime?
+  removedAt      DateTime? // removed by an Admin: hidden from every list and pick, kept for the audit history
   createdAt      DateTime  @default(now())
 
   contactsOwned   Contact[]       @relation("ContactOwner")
@@ -81,6 +82,7 @@ model Contact {
   legacy            Boolean  @default(false) // imported from Zoho
   mdmRef            String? // the merchant's seller id on the MDM platform (trackingId), once known
   mdmResponsibleRef String? // the MDM user responsible for the join (Seller.joinStatusResponsible); the lead's owner once imported
+  mdmCreatedAt      DateTime? // when the merchant entered the MDM platform (Seller.createdAt) — the date filters use it
   createdAt         DateTime @default(now())
 
   conversations Conversation[]
@@ -438,4 +440,31 @@ model MdmCountry {
   code      String
   name      String?
   updatedAt DateTime @updatedAt
+}
+
+// A merchant (lead, seller or a seller kept aside) an Admin deleted from this app. MDM is never
+// touched (its API offers no delete for sellers). While keepOut is true the sync does not bring the
+// merchant back (matched by MDM id or phone); restoring clears it so the next sync imports it again.
+// The record keeps what was deleted, for the audit history, and the template sends it carried, so a
+// delete never gives back template budget already spent.
+model DeletedMerchant {
+  id            String    @id @default(cuid())
+  kind          String // lead | seller | skipped
+  name          String?
+  phone         String?
+  mdmRef        String?
+  contactId     String? // the deleted contact's id (gone), for the audit trail
+  snapshot      String    @default("{}") // JSON: what was deleted (tickets, seller, owner, counts)
+  templateSends String    @default("[]") // JSON [{ at, key }]: billable template sends that were deleted
+  keepOut       Boolean   @default(true)
+  reason        String
+  batchId       String
+  deletedById   String?
+  deletedAt     DateTime  @default(now())
+  restoredAt    DateTime?
+  restoredById  String?
+
+  @@index([mdmRef])
+  @@index([phone])
+  @@index([deletedAt])
 }

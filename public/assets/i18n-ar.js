@@ -1847,3 +1847,48 @@ Object.assign(window.I18N_AR, {
   'Waiting for capacity': window.I18N_AR['Waiting for capacity'] || 'بانتظار السعة', 'Clear filters': 'مسح عوامل التصفية', 'No filter is set': 'لا عامل تصفية مضبوط',
   'Filters:': 'عوامل التصفية:', 'Portal widget': 'أداة البوابة', 'Voice': 'صوت', 'Email': 'بريد إلكتروني',
 });
+
+// Date filters, deleting merchants, removing accounts (2 Nov). Existing translations are kept.
+(function () {
+  const add = (dict, entries) => { for (const [k, v] of Object.entries(entries)) if (!(k in dict)) dict[k] = v; };
+  add(window.I18N_AR, {
+    'Registered': 'التسجيل', 'Any time': 'أي وقت', 'Today': 'اليوم', 'Yesterday': 'أمس', 'Last 7 days': 'آخر 7 أيام', 'Last 30 days': 'آخر 30 يومًا',
+    'This month': 'هذا الشهر', 'Last month': 'الشهر الماضي', 'Custom range': 'فترة مخصصة', 'From': 'من', 'To': 'إلى',
+    'Registered: any time': 'التسجيل: أي وقت', 'Registered on MDM': 'التسجيل على MDM', 'Created on MDM': 'الإنشاء على MDM', 'Deleted': 'الحذف',
+    'Registered = the day the merchant registered on MDM (or wrote to us first, for a merchant who came in here).': 'التسجيل = يوم تسجيل التاجر على MDM (أو أول رسالة منه، للتاجر الذي جاء من هنا).',
+    'Delete': 'حذف', 'reserved to the Administrator': 'مخصص للمسؤول', 'Reason (written to the audit log)': 'السبب (يُكتب في سجل التدقيق)',
+    'Type': 'اكتب', 'to confirm': 'للتأكيد', 'Cancel': 'إلغاء',
+    'Each merchant is deleted from this app: contact, conversation and messages, tickets and tasks': 'يُحذف كل تاجر من هذا التطبيق: جهة الاتصال والمحادثة والرسائل والتذاكر والمهام',
+    '. MDM keeps them; the sync leaves them out until you restore them on the Integrations page. This cannot be undone here.': '. يحتفظ بهم MDM؛ وتتركهم المزامنة خارجًا حتى تستعيدهم من صفحة التكاملات. لا يمكن التراجع عن ذلك هنا.',
+    'Each seller is deleted from this app: seller record, health history, playbook, tasks, contact, conversation and messages. MDM keeps them; the sync leaves them out until you restore them on the Integrations page. This cannot be undone here.':
+      'يُحذف كل بائع من هذا التطبيق: سجل البائع وتاريخ الصحة وخطة العمل والمهام وجهة الاتصال والمحادثة والرسائل. يحتفظ بهم MDM؛ وتتركهم المزامنة خارجًا حتى تستعيدهم من صفحة التكاملات. لا يمكن التراجع عن ذلك هنا.',
+    'Actor': 'المنفّذ', 'Entity': 'الكيان', 'Kind': 'النوع', 'Date': 'التاريخ', 'Ticket': 'تذكرة', 'Contact': 'جهة اتصال', 'Seller': 'بائع',
+    'Conversation': 'محادثة', 'User': 'مستخدم', 'Configuration': 'الإعدادات', 'Bulk run': 'عملية جماعية', 'operation': 'تشغيل', 'automation': 'أتمتة',
+    'configuration': 'إعدادات', 'entries': 'سجلات', 'Loading…': 'جارٍ التحميل…',
+    'Deleted merchants': 'التجار المحذوفون', 'Everything': 'الكل', 'Leads': 'العملاء المحتملون', 'Sellers': 'البائعون', 'Skipped sellers': 'البائعون المتخطَّون',
+    'Lead': 'عميل محتمل', 'Skipped seller': 'بائع متخطّى', 'What': 'ما هو', 'Reason': 'السبب', 'Nothing deleted.': 'لا شيء محذوف.',
+    'Reason for restoring (written to the audit log)': 'سبب الاستعادة (يُكتب في سجل التدقيق)', 'Restore': 'استعادة',
+    'Leads, sellers and skipped sellers an Administrator deleted here. MDM still has them; the sync leaves them out. Restoring one lets the sync bring it back — on a Full resync, or when it changes on MDM — as a new record: what was deleted here (conversation, tasks, history) does not come back.':
+      'العملاء المحتملون والبائعون والبائعون المتخطَّون الذين حذفهم مسؤول هنا. ما زالوا على MDM؛ وتتركهم المزامنة خارجًا. الاستعادة تسمح للمزامنة بإعادتهم — عند مزامنة كاملة أو عند تغيّرهم على MDM — كسجل جديد: ما حُذف هنا (المحادثة والمهام والتاريخ) لا يعود.',
+    'Deleted here only; the sync leaves them out until you restore them below': 'يُحذفون هنا فقط؛ وتتركهم المزامنة خارجًا حتى تستعيدهم أدناه',
+    'Show removed accounts': 'إظهار الحسابات المحذوفة', 'Remove': 'إزالة', 'Put back': 'إرجاع', 'removed': 'أُزيل',
+    'Everyone who can sign in. An account imported from MDM signs in with its MDM username and password (checked with MDM each time); a password set here also works. Switching an account off sends its open leads to the holding queue and its sellers to the same-market, smallest-book manager, each change audited. Removing an account does the same and takes it off every list; it can be put back.':
+      'كل من يمكنه تسجيل الدخول. الحساب المستورد من MDM يسجّل الدخول باسم المستخدم وكلمة المرور على MDM (يتحقق منهما MDM في كل مرة)؛ وكلمة المرور المعيّنة هنا تعمل أيضًا. إيقاف الحساب يرسل عملاءه المحتملين المفتوحين إلى قائمة الانتظار وبائعيه إلى مدير السوق نفسه صاحب أصغر محفظة، وكل تغيير مُسجَّل. إزالة الحساب تفعل الشيء نفسه وتخرجه من كل القوائم؛ ويمكن إرجاعه.',
+    'They are deleted here only — MDM keeps them — and the sync leaves them out until you restore them under "Deleted merchants".': 'يُحذفون هنا فقط — يحتفظ بهم MDM — وتتركهم المزامنة خارجًا حتى تستعيدهم من "التجار المحذوفون".',
+    'Reason (written to the audit log):': 'السبب (يُكتب في سجل التدقيق):', 'Not deleted: the number typed did not match.': 'لم يُحذف شيء: الرقم المكتوب غير مطابق.',
+    'Not deleted:': 'لم يُحذف:', 'Write the reason for restoring first.': 'اكتب سبب الاستعادة أولًا.',
+    'The sync may bring them back as new records; what was deleted here does not come back.': 'قد تعيدهم المزامنة كسجلات جديدة؛ ما حُذف هنا لا يعود.',
+    'They come back on a Full resync, or when they change on MDM.': 'يعودون عند مزامنة كاملة، أو عند تغيّرهم على MDM.',
+    'Account removed.': 'أُزيل الحساب.', 'Account put back.': 'أُرجع الحساب.', 'It is active.': 'إنه نشط.', 'It stays off: the person is restricted on MDM.': 'يبقى موقوفًا: الشخص مقيّد على MDM.',
+    'They can no longer sign in and leave every list.': 'لا يمكنهم تسجيل الدخول بعد الآن ويخرجون من كل القوائم.',
+    'Failed to contact': 'تعذّر التواصل', 'Cold lead': 'عميل بارد', 'Junk lead': 'عميل غير جاد', 'Open task': 'مهمة مفتوحة', 'Task done': 'مهمة منجزة',
+    'Each of their sellers goes to the manager MDM names for them, or the same-market, smallest-book manager, or stays unassigned with you alerted.': 'كل بائع لديهم يذهب إلى المدير الذي يسميه MDM، أو إلى مدير السوق نفسه صاحب أصغر محفظة، أو يبقى دون مدير مع تنبيهك.',
+  });
+  add(window.I18N_AR_TEMPLATES, {
+    'Delete {n}': 'حذف {n}', 'Delete {n} leads': 'حذف {n} عميل محتمل', 'Delete {n} lead': 'حذف {n} عميل محتمل', 'Delete {n} sellers': 'حذف {n} بائع', 'Delete {n} seller': 'حذف {n} بائع',
+    'at most {n} per run — narrow the filter': 'بحد أقصى {n} في كل عملية — ضيّق التصفية', 'At most {n} per run — narrow the filter': 'بحد أقصى {n} في كل عملية — ضيّق التصفية',
+    ' — {n} of them are also sellers in a book, and their seller record goes too': ' — {n} منهم بائعون أيضًا في محفظة، ويُحذف سجل البائع كذلك',
+    '{n} selected.': 'تم تحديد {n}.', '{n} deleted, {n} not deleted.': 'حُذف {n}، ولم يُحذف {n}.', '{n} restored, {n} not restored.': 'استُعيد {n}، ولم يُستعد {n}.',
+    'Type {n} to confirm the delete.': 'اكتب {n} لتأكيد الحذف.', '{n} deleted': 'حُذف {n}',
+  });
+})();

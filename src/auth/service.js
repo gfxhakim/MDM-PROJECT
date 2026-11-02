@@ -35,7 +35,7 @@ export function verifyToken(token) {
  */
 export async function loadPrincipal(userId, now = new Date(), db = prisma) {
   const user = await db.user.findUnique({ where: { id: userId } });
-  if (!user || !user.active) return null;
+  if (!user || !user.active || user.removedAt) return null;
   const elevation = await db.roleElevation.findFirst({
     where: { userId, revokedAt: null, startsAt: { lte: now }, endsAt: { gt: now } },
     orderBy: { endsAt: 'desc' },
@@ -69,8 +69,9 @@ export async function login(email, password, db = prisma, { fetchImpl = fetch } 
     if (hits.length === 1) user = hits[0];
   }
   // Same message for unknown email, wrong password and inactive account.
-  let ok = !!(user && user.active && user.passwordHash && (await bcrypt.compare(password, user.passwordHash)));
-  if (!ok && user && user.active && user.mdmRef) {
+  const usable = !!(user && user.active && !user.removedAt);
+  let ok = !!(usable && user.passwordHash && (await bcrypt.compare(password, user.passwordHash)));
+  if (!ok && usable && user.mdmRef) {
     const { verifyWithPlatform } = await import('../integrations/mdm-auth.js');
     ok = await verifyWithPlatform(user, typed, password, { fetchImpl });
   }

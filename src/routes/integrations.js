@@ -4,6 +4,7 @@
 //   • integrationsRouter — the Admin's status page, manual MDM sync, Zoho import, click-to-call.
 // Every connector is optional: unset credentials leave the app running on imported/seeded data
 // and the status endpoint says what is and isn't connected.
+import { dateRange } from '../http/range.js';
 import { Router } from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { ah, forbidden, unauthorized } from '../http/errors.js';
@@ -84,7 +85,7 @@ integrationsRouter.post('/mdm/push', requirePermission('integrations.manage'), a
 
 // Sellers the pull could not place, kept aside for a decision. ?decision=waiting|placed|lead|left_out|imported|all
 integrationsRouter.get('/mdm/skipped', requirePermission('integrations.manage'), ah(async (req, res) => {
-  res.json(await listSkipped({ decision: req.query.decision, reason: req.query.reason, q: req.query.q }));
+  res.json(await listSkipped({ decision: req.query.decision, reason: req.query.reason, q: req.query.q, ...dateRange(req.query) }));
 }));
 
 // { ids, action: place|lead|leave_out|reopen, market?, managerId?, note?, phone? } — each row reported on
@@ -102,7 +103,7 @@ integrationsRouter.post('/mdm/skipped/decide', requirePermission('integrations.m
 // People on MDM: every platform user the pull read, waiting for the Admin's decision.
 // ?decision=waiting|imported|left_out|all  &scope=  &q=
 integrationsRouter.get('/mdm/staff', requirePermission('integrations.manage'), ah(async (req, res) => {
-  res.json(await listStaff({ decision: req.query.decision, scope: req.query.scope || null, q: req.query.q || null }));
+  res.json(await listStaff({ decision: req.query.decision, scope: req.query.scope || null, q: req.query.q || null, ...dateRange(req.query) }));
 }));
 
 // { ids, action: import|leave_out|reopen, role?, markets?, note? } — each person reported on their

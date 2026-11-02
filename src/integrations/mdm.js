@@ -23,6 +23,7 @@ import { markImported, rememberSkipped, watchedRefs } from './mdm-skipped.js';
 import { alignOwnership, assignLeadToPlatformAgent, countryIndex, moveSellerToPlatformManager, platformPeople, refreshStaffMarkets, rememberStaff } from './mdm-staff.js';
 import { changeTicket } from '../oa/service.js';
 import { addSystemLine } from '../core/conversations.js';
+import { deletedIndex, isKeptOut } from '../core/deletion.js';
 
 export const mdmConfig = () => ({
   url: (process.env.MDM_API_URL || 'https://api.mdm.express').replace(/\/$/, ''),
@@ -66,7 +67,7 @@ async function upsertContext(db) {
   const { values: config } = await getLiveConfig(db);
   const managers = await db.user.findMany({ where: { role: 'ACCOUNT_MANAGER', active: true } });
   const people = await platformPeople(db); // imported staff: the lead's agent and the seller's manager MDM names
-  return { config, managers, leadMaxAgeDays: mdmConfig().leadMaxAgeDays, ...people };
+  return { config, managers, leadMaxAgeDays: mdmConfig().leadMaxAgeDays, deleted: await deletedIndex(db), ...people };
 }
 
 const OPEN_OA = ['new', 'failed_to_contact', 'prequalified', 'qualified'];
@@ -113,7 +114,12 @@ async function applyPlatformStatus(ticket, row, db) {
 
 /** What MDM ties to a merchant that is already here: the responsible agent, the account manager, the join history. */
 async function carryPlatformData(contact, row, ctx, db) {
-  if (row.responsibleRef && contact.mdmResponsibleRef !== row.responsibleRef) await db.contact.update({ where: { id: contact.id }, data: { mdmResponsibleRef: row.responsibleRef } });
+  const created = dateOr(row.createdAt);
+  const data = {
+    ...(row.responsibleRef && contact.mdmResponsibleRef !== row.responsibleRef ? { mdmResponsibleRef: row.responsibleRef } : {}),
+    ...(created && contact.mdmCreatedAt?.getTime() !== created.getTime() ? { mdmCreatedAt: created } : {}),
+  };
+  if (Object.keys(data).length) await db.contact.update({ where: { id: contact.id }, data });
   await importJoinHistory(contact.id, row, ctx, db);
   if (row.responsibleRef && ctx.agentsByRef?.size) {
     const t = await db.ticket.findFirst({ where: { contactId: contact.id, type: 'onboarding_task', status: { in: OPEN_OA } } });
@@ -137,6 +143,8 @@ async function carryPlatformData(contact, row, ctx, db) {
  */
 export async function upsertFromMdm(row, ctx, db = prisma) {
   const ref = row.mdmRef ?? row.sellerRef ?? row.id ?? null;
+  // deleted here by an Admin: the sync leaves the merchant out until it is restored
+  if (isKeptOut(ctx.deleted, { mdmRef: ref, phone: row.phone })) return { ok: false, action: 'kept_out', ref, reason: 'Deleted here by an Admin — the sync leaves it out.' };
   const metrics = row.metrics ?? {};
   const existing = await sellerFor({ mdmRef: ref, phone: row.phone }, db);
   if (existing) {
@@ -182,7 +190,7 @@ export async function upsertFromMdm(row, ctx, db = prisma) {
     const r = await registerMerchant({ phone, name: row.name, country: market, sourceUtm: row.utm ?? row.sourceUtm ?? 'mdm_platform' }, {}, db);
     // the merchant's record comes with them (OA 3.5): the registration date as on MDM, the status
     // MDM has for the join, the agent MDM holds responsible, and the join history — counters start at 0
-    await db.contact.update({ where: { id: r.contact.id }, data: { ...(ref ? { mdmRef: String(ref) } : {}), mdmResponsibleRef: row.responsibleRef ?? null, ...(created ? { createdAt: created } : {}) } });
+    await db.contact.update({ where: { id: r.contact.id }, data: { ...(ref ? { mdmRef: String(ref) } : {}), mdmResponsibleRef: row.responsibleRef ?? null, ...(created ? { createdAt: created, mdmCreatedAt: created } : {}) } });
     let ticket = r.ticket ?? null;
     let owner = null;
     if (ticket) {
@@ -207,7 +215,7 @@ export async function upsertFromMdm(row, ctx, db = prisma) {
   if (named) { managerId = named.id; ownership = `Kept with ${named.name} (account manager on the platform).`; }
   const { seller, ownership: placed } = await createSellerRecord({ phone, name: row.name || phone, market, mdmRef: String(ref), source: 'mdm_platform',
     activatedAt, welcomeCallAt: dateOr(row.welcomeCallAt), mirror, managerId, ownership }, { config: ctx.config, managers: ctx.managers ?? [] }, db);
-  await db.contact.update({ where: { id: seller.contactId }, data: { mdmRef: String(ref), mdmResponsibleRef: row.responsibleRef ?? null } });
+  await db.contact.update({ where: { id: seller.contactId }, data: { mdmRef: String(ref), mdmResponsibleRef: row.responsibleRef ?? null, ...(dateOr(row.createdAt) ? { mdmCreatedAt: dateOr(row.createdAt) } : {}) } });
   if (row.accountManagerRef) await db.seller.update({ where: { id: seller.id }, data: { mdmManagerRef: row.accountManagerRef } });
   await importJoinHistory(seller.contactId, { ...row, mdmRef: String(ref) }, ctx, db);
   return { ok: true, action: 'seller_created', ref, sellerId: seller.id, ownership: placed };
@@ -218,6 +226,7 @@ export async function handleMdmEvent(evt, db = prisma) {
   const type = evt?.type;
   const d = evt?.data ?? {};
   if (type === 'merchant.registered') {
+    if (isKeptOut(await deletedIndex(db), { mdmRef: d.mdmRef ?? null, phone: d.phone })) return { ok: false, reason: 'Deleted here by an Admin — left out.' };
     const r = await registerMerchant({ phone: d.phone, name: d.name, country: d.country, sourceUtm: d.utm ?? d.sourceUtm ?? 'mdm_platform' }, {}, db);
     return { ok: true, outcome: r.outcome, contactId: r.contact.id };
   }
@@ -314,6 +323,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
     else if (r.action === 'lead_created') summary.leadsCreated++;
     else if (r.action === 'seller_created') summary.sellersCreated++;
     else if (r.action === 'skipped') { summary.skippedCount++; tally(summary.reasons.skipped, r.ref ?? row?.phone, r.reason); }
+    else if (r.action === 'kept_out') summary.keptOut = (summary.keptOut ?? 0) + 1;
     else { summary.errorCount++; tally(summary.reasons.errors, r.ref, r.reason); }
     feed({ ref: r.ref ?? row?.mdmRef ?? null, name: row?.name ?? null, action: r.action,
       note: r.action === 'seller_created' ? `${row?.country ?? ''} book · ${figures(metrics)}${r.ownership ? ` · ${r.ownership}` : ''}`
@@ -366,6 +376,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
       await learnCountries(row.places);
       if (!row.mdmRef || done.has(row.mdmRef)) continue;
       done.add(row.mdmRef);
+      if (isKeptOut(ctx.deleted, row)) { await record({ ok: false, action: 'kept_out', ref: row.mdmRef, reason: 'Deleted here by an Admin — the sync leaves it out.' }, row); continue; }
       try {
         const known = await sellerFor({ mdmRef: row.mdmRef, phone: row.phone }, db).catch(() => null);
         let metrics = {};

@@ -54,6 +54,9 @@ code{font-size:12px;background:#F3F4F6;padding:1px 5px;border-radius:4px}
 .toolbar{padding:10px 12px;border:1px solid var(--line);border-radius:var(--r);background:#FAFAFA;margin-top:10px}
 .toolbar label{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink3)}
 .toolbar .row:first-child{margin-top:0}
+button.btn.danger{color:#B42318;border-color:#F3C1BC}
+.range{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}
+input[type=date]{font:inherit;font-size:13px;height:34px;border:1px solid var(--line);border-radius:var(--r);padding:0 8px;background:#fff}
 input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;border:1px solid var(--line);border-radius:var(--r);padding:0 10px;min-width:240px;background:#fff}
 #skipped table td,#staff table td{max-width:320px}
 #skipped ul,#staff ul{margin:6px 0 0;padding-inline-start:18px}
@@ -80,6 +83,7 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
     <div class="row">
       <select id="skReason"><option value="">All reasons</option></select>
       <input type="search" id="skQ" placeholder="Search name, phone or MDM id">
+      <span class="range" id="skRange"></span>
     </div>
     <div class="toolbar" id="skTools" hidden>
       <div class="row" id="skPlaceWrap">
@@ -92,6 +96,7 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
         <button class="btn" id="skLead">Open as lead <span class="n"></span></button>
         <button class="btn" id="skLeave">Leave out <span class="n"></span></button>
         <button class="btn" id="skReopen" hidden>Put back on the list <span class="n"></span></button>
+        <button class="btn danger" id="skDelete" title="Deleted here only; the sync leaves them out until you restore them below">Delete <span class="n"></span></button>
       </div>
     </div>
     <div id="skMsg"></div>
@@ -106,6 +111,7 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
     <div class="row">
       <select id="stScope"><option value="">All groups</option></select>
       <input type="search" id="stQ" placeholder="Search name, email, phone or MDM id">
+      <span class="range" id="stRange"></span>
     </div>
     <div class="toolbar" id="stTools" hidden>
       <div class="row" id="stImportWrap">
@@ -126,9 +132,28 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
 
   <section class="card" id="accounts">
     <h2>Accounts in this app</h2>
-    <p>Everyone who can sign in. An account imported from MDM signs in with its MDM username and password (checked with MDM each time); a password set here also works. Switching an account off sends its open leads to the holding queue and its sellers to the same-market, smallest-book manager, each change audited.</p>
+    <p>Everyone who can sign in. An account imported from MDM signs in with its MDM username and password (checked with MDM each time); a password set here also works. Switching an account off sends its open leads to the holding queue and its sellers to the same-market, smallest-book manager, each change audited. Removing an account does the same and takes it off every list; it can be put back.</p>
+    <div class="row"><label class="muted" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="acRemoved"> <span>Show removed accounts</span></label></div>
     <div id="acMsg"></div>
     <div class="scroll" style="max-height:480px"><table><thead><tr><th>Name</th><th>Sign-in</th><th>Role · markets</th><th>From</th><th>Work</th><th>Status</th><th></th></tr></thead><tbody id="acRows"><tr><td class="muted">Loading…</td></tr></tbody></table></div>
+  </section>
+
+  <section class="card" id="deleted">
+    <h2>Deleted merchants <span class="pill off" id="dlCount">0</span></h2>
+    <p>Leads, sellers and skipped sellers an Administrator deleted here. MDM still has them; the sync leaves them out. Restoring one lets the sync bring it back — on a Full resync, or when it changes on MDM — as a new record: what was deleted here (conversation, tasks, history) does not come back.</p>
+    <div class="row">
+      <select id="dlKind"><option value="">Everything</option><option value="lead">Leads</option><option value="seller">Sellers</option><option value="skipped">Skipped sellers</option></select>
+      <input type="search" id="dlQ" placeholder="Search name, phone or MDM id">
+      <span class="range" id="dlRange"></span>
+    </div>
+    <div class="toolbar" id="dlTools">
+      <div class="row">
+        <input type="text" id="dlNote" style="flex:1 1 300px" placeholder="Reason for restoring (written to the audit log)">
+        <button class="btn" id="dlRestore">Restore <span class="n"></span></button>
+      </div>
+    </div>
+    <div id="dlMsg"></div>
+    <div class="scroll" style="max-height:420px"><table><thead id="dlHead"></thead><tbody id="dlRows"><tr><td class="muted">Loading…</td></tr></tbody></table></div>
   </section>
 
   <section class="card" id="zoho" hidden>
@@ -162,7 +187,7 @@ function syncText(sm) {
   const errors = sm.errorCount ?? sm.errors?.length ?? 0;
   const read = sm.total ? `${(sm.fetched ?? 0).toLocaleString()} of ${sm.total.toLocaleString()} sellers read` : `${sm.fetched ?? 0} sellers read`;
   return `${sm.full ? 'full · ' : ''}${read}, ${sm.updated ?? 0} sellers updated, ${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`
-    + `${skipped ? `, ${skipped} skipped` : ''}${errors ? `, ${errors} errors` : ''}${sm.warningCount ? `, ${sm.warningCount} figures missing` : ''}`;
+    + `${skipped ? `, ${skipped} skipped` : ''}${sm.keptOut ? `, ${sm.keptOut} left out (deleted here)` : ''}${errors ? `, ${errors} errors` : ''}${sm.warningCount ? `, ${sm.warningCount} figures missing` : ''}`;
 }
 
 // The run in progress: how far it is, what it is reading now, and the last outcomes as they happen.
@@ -279,7 +304,45 @@ async function upload(dryRun) {
 }
 
 // ───────── Skipped sellers: kept aside by the import, decided here ─────────
-const sk = { tab: 'waiting', reason: '', q: '', data: null, selected: new Set(), loadedAt: 0 };
+// ───────── date ranges: every list can be narrowed to a period (quick choices or a custom range) ─────────
+const WHEN = [['', 'Any time'], ['today', 'Today'], ['yesterday', 'Yesterday'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Custom range']];
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function whenRange(r) {
+  const t = new Date(); const day = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return ymd(d); };
+  switch (r.when) {
+    case 'today': return { from: ymd(t), to: ymd(t) };
+    case 'yesterday': return { from: day(-1), to: day(-1) };
+    case '7': return { from: day(-6), to: ymd(t) };
+    case '30': return { from: day(-29), to: ymd(t) };
+    case 'month': return { from: ymd(new Date(t.getFullYear(), t.getMonth(), 1)), to: ymd(t) };
+    case 'lastmonth': return { from: ymd(new Date(t.getFullYear(), t.getMonth() - 1, 1)), to: ymd(new Date(t.getFullYear(), t.getMonth(), 0)) };
+    case 'custom': return { from: r.from || '', to: r.to || '' };
+    default: return { from: '', to: '' };
+  }
+}
+/** Adds ?from&to (the viewer's own calendar days, sent as instants) for the range a list holds. */
+function addRange(qs, r) {
+  const x = whenRange(r);
+  if (x.from) qs.set('from', new Date(x.from + 'T00:00:00').toISOString());
+  if (x.to) qs.set('to', new Date(x.to + 'T23:59:59.999').toISOString());
+}
+/** The period control of one list: a choice, and From / To days for a custom range. */
+function mountRange(id, label, r, onChange) {
+  const el = document.getElementById(id);
+  const draw = () => {
+    el.innerHTML = `<span class="muted">${esc(label)}</span><select data-k="when">${WHEN.map(([v, t]) => `<option value="${v}" ${r.when === v ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`
+      + (r.when === 'custom' ? `<input type="date" data-k="from" value="${esc(r.from)}" aria-label="From"><span class="muted">–</span><input type="date" data-k="to" value="${esc(r.to)}" aria-label="To">` : '');
+    for (const c of el.querySelectorAll('[data-k]')) c.onchange = () => {
+      r[c.dataset.k] = c.value;
+      if (c.dataset.k === 'when' && c.value === 'custom' && !r.from && !r.to) { r.when = '30'; Object.assign(r, whenRange(r)); r.when = 'custom'; }
+      draw(); onChange();
+    };
+    I18N.apply(el);
+  };
+  draw();
+}
+
+const sk = { tab: 'waiting', reason: '', q: '', range: { when: '', from: '', to: '' }, data: null, selected: new Set(), loadedAt: 0 };
 const DECISION_LABEL = { placed: 'Placed as a seller', lead: 'Opened as a lead', left_out: 'Left out', imported: 'Imported by the sync' };
 const MARKET_NAME = { LY: 'Libya', IQ: 'Iraq', LB: 'Lebanon' };
 const showSkErr = (e) => { document.getElementById('skMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
@@ -288,6 +351,7 @@ async function loadSkipped() {
   const qs = new URLSearchParams({ decision: sk.tab });
   if (sk.reason) qs.set('reason', sk.reason);
   if (sk.q) qs.set('q', sk.q);
+  addRange(qs, sk.range);
   sk.data = await API.get('/api/integrations/mdm/skipped?' + qs);
   sk.loadedAt = Date.now();
   const ok = new Set(sk.data.items.filter((i) => !i.blocked).map((i) => i.id));
@@ -328,7 +392,7 @@ function renderSkipped() {
   document.getElementById('skReopen').hidden = !leftOut;
   const n = sk.selected.size;
   for (const el of document.querySelectorAll('#skTools button .n')) el.textContent = n ? `(${n})` : '';
-  for (const id of ['skPlace', 'skLead', 'skLeave', 'skReopen']) { const b = document.getElementById(id); b.disabled = !n; b.title = n ? '' : 'Select at least one seller'; }
+  for (const id of ['skPlace', 'skLead', 'skLeave', 'skReopen', 'skDelete']) { const b = document.getElementById(id); b.disabled = !n || (id === 'skDelete' && n > d.limit); b.title = !n ? 'Select at least one seller' : id === 'skDelete' && n > d.limit ? `At most ${d.limit} per run — narrow the filter` : ''; }
   document.getElementById('skHead').innerHTML = `<tr><th>${selectable ? '<input type="checkbox" id="skAll" title="Select all on this page">' : ''}</th><th>MDM id</th><th>Name</th><th>Phone</th><th>Country</th><th>MDM status</th><th>Registered</th><th>${waiting ? 'Why skipped' : 'Decision'}</th><th>Seen</th></tr>`;
   document.getElementById('skRows').innerHTML = d.items.length ? d.items.map((i) => {
     const box = selectable ? `<input type="checkbox" data-id="${i.id}" ${sk.selected.has(i.id) ? 'checked' : ''} ${i.blocked ? `disabled title="${esc(i.blocked)}"` : ''}>` : '';
@@ -343,6 +407,7 @@ function renderSkipped() {
   }).join('') : `<tr><td colspan="9" class="muted">${waiting ? 'Nothing waiting — every seller the import read is placed, a lead, or decided.' : 'Nothing here yet.'}</td></tr>`;
   for (const b of document.querySelectorAll('#skTabs .tab')) b.onclick = () => { sk.tab = b.dataset.tab; sk.selected.clear(); document.getElementById('skMsg').innerHTML = ''; loadSkipped().catch(showSkErr); };
   const all = document.getElementById('skAll');
+  if (all) all.checked = d.items.some((i) => !i.blocked) && d.items.every((i) => i.blocked || sk.selected.has(i.id));
   if (all) all.onchange = () => { for (const i of d.items) if (!i.blocked) { if (all.checked) sk.selected.add(i.id); else sk.selected.delete(i.id); } renderSkipped(); };
   for (const cb of document.querySelectorAll('#skRows input[type=checkbox]')) cb.onchange = () => { if (cb.checked) sk.selected.add(cb.dataset.id); else sk.selected.delete(cb.dataset.id); renderSkipped(); };
   I18N.apply(document.getElementById('skipped'));
@@ -388,8 +453,80 @@ async function decide(action) {
   } catch (e) { showSkErr(e); renderSkipped(); }
 }
 
+// Delete the selected skipped sellers: gone from the list, and the sync leaves them out until they are
+// restored under "Deleted merchants". A written reason and the number typed to confirm.
+async function deleteRows(kind, ids, msgId, after) {
+  const t = I18N.t; const n = ids.length;
+  const reason = prompt(`${t(`${n} selected.`)} ${t('They are deleted here only — MDM keeps them — and the sync leaves them out until you restore them under "Deleted merchants".')} ${t('Reason (written to the audit log):')}`);
+  if (!reason || !reason.trim()) return;
+  const typed = prompt(t(`Type ${n} to confirm the delete.`));
+  if ((typed || '').trim() !== String(n)) { document.getElementById(msgId).innerHTML = `<div class="msg off">${esc(t('Not deleted: the number typed did not match.'))}</div>`; return; }
+  try {
+    const r = await API.post('/api/admin/delete', { kind, ids, reason: reason.trim() });
+    const failed = r.results.filter((x) => !x.ok);
+    document.getElementById(msgId).innerHTML = `<div class="msg ${r.failed ? (r.done ? 'off' : 'fail') : 'on'}"><span>${esc(t(`${r.done} deleted, ${r.failed} not deleted.`))}</span> <span>${esc(t('One audit entry records this run.'))}</span>`
+      + `${failed.length ? `<div style="margin-top:6px"><b>${esc(t('Not deleted:'))}</b><ul>${failed.slice(0, 30).map((x) => `<li><code>${esc(x.mdmRef || x.id)}</code> <span data-i18n="off">${esc(x.name || '')}</span> — <span>${esc(x.reason)}</span></li>`).join('')}</ul></div>` : ''}</div>`;
+    await after();
+  } catch (e) { document.getElementById(msgId).innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; }
+}
+async function deleteSkipped() {
+  const ids = [...sk.selected]; if (!ids.length) return;
+  await deleteRows('skipped', ids, 'skMsg', async () => { sk.selected.clear(); sk.loadedAt = 0; dl.loadedAt = 0; await load(); });
+}
+
+// ───────── Deleted merchants: what an Admin deleted here, kept out of the sync until restored ─────────
+const dl = { kind: '', q: '', range: { when: '', from: '', to: '' }, data: null, selected: new Set(), loadedAt: 0 };
+const DL_KIND = { lead: 'Lead', seller: 'Seller', skipped: 'Skipped seller' };
+const DL_STATUS = { new: 'New', failed_to_contact: 'Failed to contact', prequalified: 'Pre-qualified', qualified: 'Qualified', activated: 'Activated', cold_lead: 'Cold lead', junk_lead: 'Junk lead', open: 'Open task', done: 'Task done' };
+const showDlErr = (e) => { document.getElementById('dlMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
+async function loadDeleted() {
+  const qs = new URLSearchParams();
+  if (dl.kind) qs.set('kind', dl.kind);
+  if (dl.q) qs.set('q', dl.q);
+  addRange(qs, dl.range);
+  dl.data = await API.get('/api/admin/deleted?' + qs);
+  dl.loadedAt = Date.now();
+  const ok = new Set(dl.data.items.map((i) => i.id));
+  dl.selected = new Set([...dl.selected].filter((id) => ok.has(id)));
+  renderDeleted();
+}
+function renderDeleted() {
+  const d = dl.data; if (!d) return;
+  document.getElementById('dlCount').textContent = `${d.total}`;
+  const n = dl.selected.size;
+  for (const el of document.querySelectorAll('#dlTools button .n')) el.textContent = n ? `(${n})` : '';
+  const b = document.getElementById('dlRestore'); b.disabled = !n; b.title = n ? '' : 'Select at least one row';
+  document.getElementById('dlHead').innerHTML = '<tr><th><input type="checkbox" id="dlAll" title="Select all"></th><th>Name</th><th>What</th><th>MDM id</th><th>Deleted</th><th>Reason</th></tr>';
+  document.getElementById('dlRows').innerHTML = d.items.map((i) => {
+    const sn = i.snapshot || {};
+    const what = `<span>${esc(DL_KIND[i.kind] || i.kind)}</span>${sn.tickets?.length ? `<br><span class="muted">${sn.tickets.map((x) => `<span>${esc(DL_STATUS[x.status] || x.status)}</span>`).join(', ')}${sn.seller?.accountManager ? ` · ${esc(sn.seller.accountManager)}` : ''}</span>` : ''}`;
+    return `<tr><td><input type="checkbox" data-id="${i.id}" ${dl.selected.has(i.id) ? 'checked' : ''}></td>`
+      + `<td><b data-i18n="off">${esc(i.name || '—')}</b><br><span class="muted" data-i18n="off">${esc(i.phone || '')}</span></td><td>${what}</td>`
+      + `<td><code data-i18n="off">${esc(i.mdmRef || '—')}</code></td>`
+      + `<td><span data-i18n="off">${new Date(i.deletedAt).toLocaleString()}</span><br><span class="muted" data-i18n="off">${esc(i.deletedBy || '')}</span></td>`
+      + `<td data-i18n="off">${esc(i.reason)}</td></tr>`;
+  }).join('') || '<tr><td colspan="6" class="muted">Nothing deleted.</td></tr>';
+  const all = document.getElementById('dlAll');
+  all.checked = !!d.items.length && d.items.every((i) => dl.selected.has(i.id));
+  all.onchange = () => { for (const i of d.items) { if (all.checked) dl.selected.add(i.id); else dl.selected.delete(i.id); } renderDeleted(); };
+  for (const cb of document.querySelectorAll('#dlRows input[type=checkbox]')) cb.onchange = () => { if (cb.checked) dl.selected.add(cb.dataset.id); else dl.selected.delete(cb.dataset.id); renderDeleted(); };
+  I18N.apply(document.getElementById('deleted'));
+}
+async function restoreDeleted() {
+  const ids = [...dl.selected]; if (!ids.length) return;
+  const t = I18N.t;
+  const reason = document.getElementById('dlNote').value.trim();
+  if (!reason) { document.getElementById('dlMsg').innerHTML = `<div class="msg off">${esc(t('Write the reason for restoring first.'))}</div>`; return; }
+  if (!confirm(`${t(`${ids.length} selected.`)} ${t('The sync may bring them back as new records; what was deleted here does not come back.')}`)) return;
+  try {
+    const r = await API.post('/api/admin/deleted/restore', { ids, reason });
+    document.getElementById('dlMsg').innerHTML = `<div class="msg on"><span>${esc(t(`${r.done} restored, ${r.failed} not restored.`))}</span> <span>${esc(t('They come back on a Full resync, or when they change on MDM.'))}</span></div>`;
+    dl.selected.clear(); document.getElementById('dlNote').value = ''; dl.loadedAt = 0; await loadDeleted();
+  } catch (e) { showDlErr(e); }
+}
+
 // ───────── People on MDM: every platform user, imported here with a role or left out ─────────
-const st = { tab: 'waiting', scope: '', q: '', data: null, selected: new Set(), loadedAt: 0 };
+const st = { tab: 'waiting', scope: '', q: '', range: { when: '', from: '', to: '' }, data: null, selected: new Set(), loadedAt: 0 };
 const ST_DECISION = { imported: 'Imported', left_out: 'Left out' };
 const showStErr = (e) => { document.getElementById('stMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
 
@@ -397,6 +534,7 @@ async function loadStaff() {
   const qs = new URLSearchParams({ decision: st.tab });
   if (st.scope) qs.set('scope', st.scope);
   if (st.q) qs.set('q', st.q);
+  addRange(qs, st.range);
   st.data = await API.get('/api/integrations/mdm/staff?' + qs);
   st.loadedAt = Date.now();
   const ok = new Set(st.data.items.filter((i) => !i.blocked).map((i) => i.id));
@@ -453,6 +591,7 @@ function renderStaff() {
   }).join('') : `<tr><td colspan="6" class="muted">${waiting ? (c.waiting + c.imported + c.left_out ? 'Nobody waiting — everyone MDM lists is imported or left out.' : 'No users read from MDM yet — run a sync. If MDM refused the call, the status card above says so.') : 'Nothing here yet.'}</td></tr>`;
   for (const b of document.querySelectorAll('#stTabs .tab')) b.onclick = () => { st.tab = b.dataset.tab; st.selected.clear(); document.getElementById('stMsg').innerHTML = ''; loadStaff().catch(showStErr); };
   const all = document.getElementById('stAll');
+  if (all) all.checked = d.items.some((i) => !i.blocked) && d.items.every((i) => i.blocked || st.selected.has(i.id));
   if (all) all.onchange = () => { for (const i of d.items) if (!i.blocked) { if (all.checked) st.selected.add(i.id); else st.selected.delete(i.id); } renderStaff(); };
   for (const cb of document.querySelectorAll('#stRows input[type=checkbox]')) cb.onchange = () => { if (cb.checked) st.selected.add(cb.dataset.id); else st.selected.delete(cb.dataset.id); renderStaff(); };
   I18N.apply(document.getElementById('staff'));
@@ -486,12 +625,12 @@ async function decideStaff(action) {
 }
 
 // ───────── Accounts: everyone who can sign in ─────────
-const ac = { data: null, loadedAt: 0 };
+const ac = { data: null, loadedAt: 0, showRemoved: false };
 const ROLE_LABEL = { OA_AGENT: 'Onboarding agent', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', ADMIN: 'Administrator', ACCOUNT_MANAGER: 'Account manager', READ_ONLY: 'Read-only' };
 const showAcErr = (e) => { document.getElementById('acMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
 
 async function loadAccounts() {
-  ac.data = await API.get('/api/admin/users');
+  ac.data = await API.get('/api/admin/users' + (ac.showRemoved ? '?removed=true' : ''));
   ac.loadedAt = Date.now();
   renderAccounts();
 }
@@ -503,10 +642,12 @@ function renderAccounts() {
     const signin = `<span data-i18n="off">${esc(u.email)}</span>${u.mdmUsernames.length && !(u.mdmUsernames.length === 1 && u.mdmUsernames[0] === u.email) ? `<br><span class="muted">MDM username:</span> <span data-i18n="off">${esc(u.mdmUsernames.join(', '))}</span>` : ''}`
       + `<br><span class="muted">${u.source === 'mdm' ? (u.hasPassword ? 'MDM password, or the one set here' : 'MDM password') : (u.hasPassword ? 'Password set here' : 'No password yet')}</span>`;
     const work = u.role === 'OA_AGENT' ? `<span data-i18n="off">${u.openLeads}</span> <span>open leads</span>` : u.role === 'ACCOUNT_MANAGER' ? `<span data-i18n="off">${u.bookSize}</span> <span>sellers in the book</span>` : '<span class="muted">—</span>';
-    const status = `${u.active ? '<span class="tag">active</span>' : '<span class="tag off">switched off</span>'}${u.restrictedOnMdm ? ' <span class="tag off">restricted on MDM</span>' : ''}`;
+    const status = u.removedAt ? '<span class="tag off">removed</span>' : `${u.active ? '<span class="tag">active</span>' : '<span class="tag off">switched off</span>'}${u.restrictedOnMdm ? ' <span class="tag off">restricted on MDM</span>' : ''}`;
     const from = u.source === 'mdm' ? `<span class="tag mdm">MDM</span>${u.mdmRole ? `<br><span class="muted" data-i18n="off">${esc(u.mdmRole)}${u.mdmScope ? ` · ${esc(u.mdmScope)}` : ''}</span>` : ''}` : demo ? '<span class="tag demo">demo account</span>' : '<span class="tag">created here</span>';
-    const actions = `<button class="btn" data-act="password" data-id="${u.id}">Set password</button> `
-      + (u.active ? `<button class="btn" data-act="off" data-id="${u.id}">Switch off</button>` : `<button class="btn" data-act="on" data-id="${u.id}">Switch on</button>`);
+    const actions = u.removedAt ? `<button class="btn" data-act="restore" data-id="${u.id}">Put back</button>`
+      : `<button class="btn" data-act="password" data-id="${u.id}">Set password</button> `
+        + (u.active ? `<button class="btn" data-act="off" data-id="${u.id}">Switch off</button>` : `<button class="btn" data-act="on" data-id="${u.id}">Switch on</button>`)
+        + ` <button class="btn danger" data-act="remove" data-id="${u.id}">Remove</button>`;
     return `<tr><td><b data-i18n="off">${esc(u.name)}</b></td><td>${signin}</td><td><span>${esc(ROLE_LABEL[u.role] || u.role)}</span><br><span class="muted">${u.markets.map((m) => `<span>${esc(MARKET_NAME[m] || m)}</span>`).join(', ') || '—'}</span></td><td>${from}</td><td>${work}</td><td>${status}</td><td style="white-space:nowrap">${actions}</td></tr>`;
   }).join('') || '<tr><td colspan="7" class="muted">No accounts.</td></tr>';
   for (const b of document.querySelectorAll('#acRows button')) b.onclick = () => accountAction(b.dataset.act, b.dataset.id);
@@ -523,6 +664,17 @@ async function accountAction(act, id) {
       const r = await API.post(`/api/admin/users/${id}/password`, { password: pw });
       document.getElementById('acMsg').innerHTML = `<div class="msg on"><span>${esc(t('Password set.'))}</span>${r.mdmSignIn ? ` <span>${esc(t('Their MDM password still works too.'))}</span>` : ''}</div>`;
       ac.loadedAt = 0; await loadAccounts();
+      return;
+    }
+    if (act === 'remove' || act === 'restore') {
+      const remove = act === 'remove';
+      const reason = prompt(remove
+        ? `${t('Remove')} ${u.name}? ${t('They can no longer sign in and leave every list.')} ${t(u.role === 'OA_AGENT' ? 'Their open leads go to the holding queue and are assigned again by capacity.' : u.role === 'ACCOUNT_MANAGER' ? 'Each of their sellers goes to the manager MDM names for them, or the same-market, smallest-book manager, or stays unassigned with you alerted.' : '')} ${t('Reason (written to the audit log):')}`
+        : `${t('Put back')} ${u.name}? ${t('Reason (written to the audit log):')}`);
+      if (!reason) return;
+      const r = await API.post(`/api/admin/users/${id}/${act}`, { reason });
+      document.getElementById('acMsg').innerHTML = `<div class="msg on"><span>${esc(t(remove ? 'Account removed.' : 'Account put back.'))}</span>${remove ? ` <span>${esc(t(`${r.leadsHeld} leads to the holding queue, ${r.sellersMoved} sellers moved, ${r.sellersUnassigned} sellers left unassigned.`))}</span>` : ` <span>${esc(t(r.active ? 'It is active.' : 'It stays off: the person is restricted on MDM.'))}</span>`}</div>`;
+      ac.loadedAt = 0; st.loadedAt = 0; await load();
       return;
     }
     const off = act === 'off';
@@ -546,7 +698,8 @@ function follow() {
 
 async function load() {
   const [status] = await Promise.all([API.get('/api/integrations/status'), Date.now() - sk.loadedAt > 10000 ? loadSkipped().catch(showSkErr) : null,
-    Date.now() - st.loadedAt > 10000 ? loadStaff().catch(showStErr) : null, Date.now() - ac.loadedAt > 10000 ? loadAccounts().catch(showAcErr) : null]);
+    Date.now() - st.loadedAt > 10000 ? loadStaff().catch(showStErr) : null, Date.now() - ac.loadedAt > 10000 ? loadAccounts().catch(showAcErr) : null,
+    Date.now() - dl.loadedAt > 10000 ? loadDeleted().catch(showDlErr) : null]);
   state.status = status;
   renderStatus(); I18N.apply(document.body);
   follow();
@@ -554,7 +707,7 @@ async function load() {
 
 window.render = function () {
   document.getElementById('lang').innerHTML = I18N.toggleHTML();
-  renderStatus(); renderSkipped(); renderStaff(); renderAccounts();
+  renderStatus(); renderSkipped(); renderStaff(); renderAccounts(); renderDeleted();
 };
 
 (async () => {
@@ -572,6 +725,15 @@ window.render = function () {
   document.getElementById('skLead').onclick = () => decide('lead');
   document.getElementById('skLeave').onclick = () => decide('leave_out');
   document.getElementById('skReopen').onclick = () => decide('reopen');
+  document.getElementById('skDelete').onclick = () => deleteSkipped();
+  mountRange('skRange', 'Registered on MDM', sk.range, () => { sk.selected.clear(); loadSkipped().catch(showSkErr); });
+  mountRange('stRange', 'Created on MDM', st.range, () => { st.selected.clear(); loadStaff().catch(showStErr); });
+  mountRange('dlRange', 'Deleted', dl.range, () => { dl.selected.clear(); loadDeleted().catch(showDlErr); });
+  document.getElementById('dlRestore').onclick = () => restoreDeleted();
+  document.getElementById('dlKind').onchange = (e) => { dl.kind = e.target.value; dl.selected.clear(); loadDeleted().catch(showDlErr); };
+  let dlTimer = null;
+  document.getElementById('dlQ').oninput = (e) => { clearTimeout(dlTimer); dlTimer = setTimeout(() => { dl.q = e.target.value.trim(); dl.selected.clear(); loadDeleted().catch(showDlErr); }, 300); };
+  document.getElementById('acRemoved').onchange = (e) => { ac.showRemoved = e.target.checked; loadAccounts().catch(showAcErr); };
   document.getElementById('skReason').onchange = (e) => { sk.reason = e.target.value; loadSkipped().catch(showSkErr); };
   document.getElementById('stImport').onclick = () => decideStaff('import');
   document.getElementById('stLeave').onclick = () => decideStaff('leave_out');

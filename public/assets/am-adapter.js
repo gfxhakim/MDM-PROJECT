@@ -92,7 +92,7 @@
     const s = {
       id: r.id, code: r.mdmRef, biz: r.name, owner: r.name, country, city: '—', cat: '—', phone: r.phone,
       color: COLORS[i % COLORS.length], amId: r.assignedAccountManagerId, stage: STAGE[r.stage] || 'active', serverStage: r.stage,
-      activatedAt: r.activatedAt, assignedAt: r.activatedAt, weeks, totalOrders: m.totalOrders,
+      activatedAt: r.activatedAt, assignedAt: r.activatedAt, enteredAt: r.registeredAt || r.activatedAt, weeks, totalOrders: m.totalOrders,
       deliveryRate: m.deliveryRate, returnRate: m.returnRate, cancelRate: m.cancelRate, returnWeeksHigh: high,
       wallet: m.wallet, walletNegDays: m.walletNegativeDays, products: m.products,
       markets: [country].concat(Array.from({ length: Math.max(0, (m.marketsServed || 1) - 1) }, () => 'another market')),
@@ -461,6 +461,106 @@
       await API.patch('/api/config/draft', { changes: { [key]: !r.live } });
       await API.post('/api/config/publish', { expectedVersion: X.version, note: `${r.live ? 'Disable' : 'Enable'} ${id}` });
     }, `Rule ${id} ${r.live ? 'disabled' : 'enabled'}`);
+  };
+
+  // ───────────── date filter (My Portfolio, All Sellers) ─────────────
+  // The Admin's request (2 Nov): every list can be narrowed to the merchants that registered on MDM
+  // in a period — quick choices or a custom range. The prototype's search bar keeps its search and
+  // sort; the period sits next to them. The choice lives in S (kept across the language switch);
+  // changing it clears the selection, so a bulk action only acts on rows the Head of AM can see.
+  S.when = S.when || { when: '', from: '', to: '' };
+  const WHEN = [['', 'Registered: any time'], ['today', 'Today'], ['yesterday', 'Yesterday'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Custom range']];
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  function whenRange(when, from, to) {
+    const t = new Date(); const day = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return ymd(d); };
+    switch (when) {
+      case 'today': return { from: ymd(t), to: ymd(t) };
+      case 'yesterday': return { from: day(-1), to: day(-1) };
+      case '7': return { from: day(-6), to: ymd(t) };
+      case '30': return { from: day(-29), to: ymd(t) };
+      case 'month': return { from: ymd(new Date(t.getFullYear(), t.getMonth(), 1)), to: ymd(t) };
+      case 'lastmonth': return { from: ymd(new Date(t.getFullYear(), t.getMonth() - 1, 1)), to: ymd(new Date(t.getFullYear(), t.getMonth(), 0)) };
+      case 'custom': return { from: from || '', to: to || '' };
+      default: return { from: '', to: '' };
+    }
+  }
+  function inPeriod(s) {
+    const r = whenRange(S.when.when, S.when.from, S.when.to);
+    if (!r.from && !r.to) return true;
+    if (!s.enteredAt) return false;
+    const d = new Date(s.enteredAt);
+    if (r.from && d < new Date(r.from + 'T00:00:00')) return false;
+    if (r.to && d > new Date(r.to + 'T23:59:59.999')) return false;
+    return true;
+  }
+  X.setWhen = function (k, v) {
+    S.when[k] = v;
+    if (k === 'when' && v === 'custom' && !S.when.from && !S.when.to) { const r = whenRange('30'); S.when.from = r.from; S.when.to = r.to; }
+    S.sel = []; render();
+  };
+  function periodControl() {
+    const w = S.when;
+    return `<select class="fi" style="width:auto${w.when ? ';border-color:var(--red)' : ''}" title="The day the merchant registered on MDM" onchange="MDM.setWhen('when',this.value)">
+        ${WHEN.map(([v, t]) => `<option value="${v}" ${w.when === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`
+      + (w.when === 'custom'
+        ? `<input class="fi" type="date" style="width:auto" value="${esc(w.from)}" ${w.to ? `max="${esc(w.to)}"` : ''} aria-label="From" onchange="MDM.setWhen('from',this.value)">
+           <input class="fi" type="date" style="width:auto" value="${esc(w.to)}" ${w.from ? `min="${esc(w.from)}"` : ''} aria-label="To" onchange="MDM.setWhen('to',this.value)">` : '');
+  }
+  const SORT_END = "</select>\n  </div>";
+  const withPeriod = (html) => html.replace(SORT_END, `</select>\n    ${periodControl()}\n  </div>`);
+  const protoAdmList = window.admList;
+  window.admList = function () { return protoAdmList().filter(inPeriod); };
+  const protoViewPortfolio = window.viewPortfolio;
+  window.viewPortfolio = function () {
+    // the portfolio reads S.sellers directly: give it the period's sellers while it draws
+    const all = S.sellers; S.sellers = all.filter(inPeriod);
+    try { return withPeriod(protoViewPortfolio()); } finally { S.sellers = all; }
+  };
+
+  // ───────────── deleting sellers (Head of AM = Administrator, All Sellers) ─────────────
+  // Deleted here only — MDM is never touched — and kept out of the sync until restored on the
+  // Integrations page (the Admin's choice, 2 Nov). At most 200 per run, a written reason, the number
+  // typed to confirm; each seller is reported on its own, one audit entry per run.
+  const MAX_DELETE = 200;
+  const protoViewAllSellers = window.viewAllSellers;
+  window.viewAllSellers = function () {
+    let html = withPeriod(protoViewAllSellers());
+    if (S.sel.length) {
+      const can = X.grants?.['records.delete'] === true; const over = S.sel.length > MAX_DELETE;
+      const del = can && !over
+        ? `<button class="btn btn-ghost btn-sm" style="color:#B42318" onclick="MDM.askDelete()">${ic('x', 12)} Delete</button>`
+        : `<span style="display:inline-flex;flex-direction:column;gap:2px"><button class="btn btn-ghost btn-sm" disabled>${ic('x', 12)} Delete</button><span class="why">${can ? `at most ${MAX_DELETE} per run — narrow the filter` : 'reserved to the Administrator'}</span></span>`;
+      html = html.replace('<button class="btn btn-ghost btn-sm" onclick="S.sel=[];render()">Clear</button>', `${del}\n    <button class="btn btn-ghost btn-sm" onclick="S.sel=[];render()">Clear</button>`);
+    }
+    return html;
+  };
+  X.askDelete = function () {
+    const n = S.sel.length; if (!n) return;
+    openModal(`<div class="modal-h">${ic('x', 18)}<h3>Delete ${n} seller${n === 1 ? '' : 's'}</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b">
+        <div class="banner bn-amber tiny">${ic('shield', 14)}<div>Each seller is deleted from this app: seller record, health history, playbook, tasks, contact, conversation and messages. MDM keeps them; the sync leaves them out until you restore them on the Integrations page. This cannot be undone here.</div></div>
+        <label class="fl" style="margin-top:12px">Reason (written to the audit log)</label>
+        <textarea class="fi" id="m-note" rows="2" oninput="MDM.deleteReady(${n})"></textarea>
+        <label class="fl" style="margin-top:10px">Type <b class="num">${n}</b> to confirm</label>
+        <input class="fi" id="m-confirm" inputmode="numeric" autocomplete="off" oninput="MDM.deleteReady(${n})">
+      </div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" id="modal-go" disabled onclick="MDM.doDelete()">Delete ${n}</button></div>`);
+  };
+  X.deleteReady = function (n) {
+    const ok = !!(document.getElementById('m-note')?.value || '').trim() && (document.getElementById('m-confirm')?.value || '').trim() === String(n);
+    const b = document.getElementById('modal-go'); if (b) b.disabled = !ok;
+  };
+  X.doDelete = function () {
+    const ids = S.sel.slice(); const reason = (document.getElementById('m-note')?.value || '').trim();
+    closeModal();
+    act(async () => {
+      const r = await API.post('/api/admin/delete', { kind: 'sellers', ids, reason });
+      S.sel = [];
+      const bad = r.results.filter((x) => !x.ok);
+      toast(`${r.done} deleted${bad.length ? ` · ${bad.length} not deleted: ${bad[0].reason}` : ''}`, bad.length ? 'warn' : 'ok');
+    });
   };
 
   // ───────────── boot ─────────────

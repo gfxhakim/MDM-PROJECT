@@ -1,5 +1,6 @@
 // WhatsApp templates: rendering, eligibility and the onboarding template budget.
 // A template costs money and needs Meta approval; a macro is free and internal (OA 6.6).
+import { deletedTemplateSends } from './deletion.js';
 import { prisma } from '../db.js';
 import { getLiveConfig } from '../config/service.js';
 import { badRequest, HttpError, notFound } from '../http/errors.js';
@@ -43,10 +44,13 @@ export async function onboardingBudget(conversationId, { now = new Date(), confi
   const values = config ?? (await getLiveConfig(db)).values;
   const oaKeys = (await db.template.findMany({ where: { module: 'oa' }, select: { key: true } })).map((t) => t.key);
   const base = { kind: 'template', direction: 'out', templateKey: { in: oaKeys } };
-  const [used, contactUsed] = await Promise.all([
+  const [sent, deletedSends, contactUsed] = await Promise.all([
     db.message.count({ where: { ...base, createdAt: { gte: monthStart(now) } } }),
+    // sends of merchants deleted since stay spent (core/deletion.js)
+    deletedTemplateSends({ since: monthStart(now), keys: oaKeys }, db),
     db.message.count({ where: { ...base, conversationId } }),
   ]);
+  const used = sent + deletedSends;
   const ceiling = values['oa.template_budget_month'];
   const contactCap = values['oa.template_per_contact_cap'];
   let reason = null;

@@ -52,6 +52,9 @@ const OA = {
   'audit.view':                   R(false, false, true, true, false, true),
   // Platform: connectors (MDM, WhatsApp, Yeastar) and the Zoho import. Admin only.
   'integrations.manage':          R(false, false, false, true, false, false),
+  // Deleting merchants (leads, sellers, contacts) from this app and removing accounts. Admin only;
+  // every run is one audit entry with the full list, and MDM is never touched.
+  'records.delete':               R(false, false, false, true, false, false),
 };
 
 // ─────────── Account management (AM Appendix A) ───────────

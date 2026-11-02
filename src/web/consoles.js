@@ -79,6 +79,8 @@ function buildOa() {
   h = replaceOnce(h, "let S={leads:SEED.map(build),", "let S={leads:[],", file);
   h = replaceOnce(h, "try{const raw=localStorage.getItem(KEY); if(raw){const p=JSON.parse(raw); if(p&&p.leads&&p.leads.length) S.leads=p.leads;}}catch(e){}", '', file);
   h = replaceOnce(h, '/* =============== boot =============== */\nrender();', '/* boot: /assets/oa-adapter.js */', file);
+  // the audit card shows 14 entries; a filtered audit (the Filter button) shows up to 200
+  h = replaceOnce(h, '${AUDIT.slice(0,14).map(', '${AUDIT.slice(0,window.AUDIT_SHOW||14).map(', file);
   for (const [from, to] of [...COMMON_REPLACEMENTS, ...OA_REPLACEMENTS]) h = replaceOnce(h, from, to, file);
   return HEAD + h + TAIL('oa-adapter.js');
 }
