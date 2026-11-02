@@ -16,6 +16,19 @@ export const TRANSITIONS = {
   junk_lead: ['prequalified'], // reopen, written reason
 };
 
+// The status categories (OA 2.4) and what each transition requires (OA 2.5), as the Configuration
+// screen shows them — read from here so the table is the rule the service enforces.
+export const CATEGORY = { new: 'open', failed_to_contact: 'open', prequalified: 'open', qualified: 'open', activated: 'solved', cold_lead: 'closed', junk_lead: 'closed' };
+export const REQUIRED_ON = {
+  new: '—',
+  failed_to_contact: 'To Cold: a reason, or the cadence cutoff having been reached',
+  prequalified: 'To Cold: a written reason',
+  qualified: 'To Activated: all five qualification criteria true and a complete handoff record',
+  activated: '—',
+  cold_lead: 'A written reason, recorded against the actor',
+  junk_lead: 'A written reason, recorded against the actor',
+};
+
 export const QUALIFICATION_KEYS = ['reachable', 'intent', 'walkthrough', 'documents', 'expectations'];
 export const QUALIFICATION_LABELS = {
   reachable: 'Real, reachable person',

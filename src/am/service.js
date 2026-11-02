@@ -345,7 +345,11 @@ export async function consoleBundle(user, { now = new Date() } = {}, db = prisma
         tasks: (tasksBy.get(s.id) ?? []).map((t) => taskView(user, t, s, c)),
         playbook: STEPS.map((step) => {
           const tick = (ticksBy.get(s.id) ?? []).find((x) => x.stepDay === step.day);
-          return { day: step.day, title: step.title, gate: step.gate, gateOpen: gateOpen(step, s), tickedAt: tick?.tickedAt ?? null };
+          const open = gateOpen(step, s); const can = sellerCan(user, s, 'playbook.tick');
+          // the same verdict getSeller gives, so the console draws each step as the server will judge it (AC-14)
+          return { day: step.day, title: step.title, gate: step.gate, gateOpen: open, tickedAt: tick?.tickedAt ?? null, tickedById: tick?.tickedById ?? null,
+            canTick: !tick?.tickedAt && open && can.allowed,
+            reason: tick?.tickedAt ? 'Already complete.' : !can.allowed ? can.reason : open ? null : `Gate not met: ${step.gate}.` };
         }),
         conversation: conv ? { id: conv.id, channel: conv.channel, lastInboundAt: conv.lastInboundAt, takenOverById: conv.takenOverById, messages: conv.messages } : null,
         events: evBy.get(s.id) ?? [],

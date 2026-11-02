@@ -99,7 +99,7 @@
       lastOrderAt: m.lastOrderAt, lastLoginAt: r.lastLoginAt || r.activatedAt, openTickets: r.openTickets,
       lastContactAt: r.lastContactAt || r.activatedAt, lastQbrAt: r.lastReviewAt, welcomeCallAt: r.welcomeCallAt,
       channel: r.conversation?.channel === 'portal' ? 'portal' : 'whatsapp', lastInboundAt: r.conversation?.lastInboundAt ?? null,
-      convId: r.conversation?.id ?? null, contactId: r.contactId, health: r.health, playbook: r.playbook,
+      convId: r.conversation?.id ?? null, takenOverById: r.conversation?.takenOverById ?? null, contactId: r.contactId, health: r.health, playbook: r.playbook,
       msgs: [], tl: [], tasks: r.tasks.map(taskOf), readAlerts: readAlerts(),
       pb: Object.fromEntries(r.playbook.filter((p) => p.tickedAt).map((p) => [`d${p.day}`, true])),
     };
@@ -217,7 +217,6 @@
   // ───────────── identity & role ─────────────
   window.save = function () {};
   window.resetDemo = function () { reload().then(() => toast('Reloaded from the server', 'ok')); };
-  canEdit = (s) => s.amId === ME; // eslint-disable-line no-global-assign
   const isHead = () => X.me.role === 'ADMIN'; // the Head of AM workspace (AM Appendix A: Admin)
   window.setRole = function (r) {
     if (r === 'admin' && !isHead()) return toast('The Head of Account Management workspace is not part of your role.', 'warn');
@@ -463,6 +462,109 @@
     }, `Rule ${id} ${r.live ? 'disabled' : 'enabled'}`);
   };
 
+  // ───────────── controls the prototype left as notes ─────────────
+  // Each one does what the specs define, or is drawn disabled with its reason written under it —
+  // never a pop-up note. The reasons are in /assets/controls.js.
+  const denied = () => CTL.denied(X.me.role);
+  // The prototype's act() puts a disabled control's reason in a tooltip; it is written under it instead.
+  window.act = function (label, ico, fn, ok, why, cls = 'btn-ghost') {
+    return ok ? `<button class="btn ${cls} btn-sm" onclick="${fn}">${ic(ico, 12)} ${label}</button>`
+      : CTL.off(`${cls} btn-sm`, ico, label, why || '');
+  };
+  // Sidebar. OmniDesk: the Head of AM opens the OmniDesk Monitor; the full inbox is the parent platform's.
+  X.navOmni = () => (isHead()
+    ? `<button class="nav-item" onclick="setRole('admin');location.hash='#/a/monitor'"><span class="nav-ico" style="background:#EEF2FF;color:#4F46E5">${ic('chat', 15)}</span> OmniDesk <span class="chev">${ic('chev', 13)}</span></button>`
+    : CTL.navOff('chat', 'OmniDesk', CTL.WHY.omni));
+  // Onboarding (OA): the Admin is the same admin in the other section (the prototype's words).
+  X.navOa = () => (isHead()
+    ? CTL.navTo('target', 'Onboarding (OA)', '/oa#/a/ops')
+    : CTL.navOff('target', 'Onboarding (OA)', CTL.WHY.amOnboarding, '<span class="chip" style="margin-left:auto">read</span>'));
+  // "Open in OmniDesk": the same conversation in the Monitor, for the Head of AM.
+  X.omniBtn = (id) => (isHead()
+    ? `<button class="btn btn-ghost btn-sm" onclick="MDM.openMonitor('${id}')">${ic('link', 12)} Open in OmniDesk</button>`
+    : CTL.off('btn-ghost btn-sm', 'link', 'Open in OmniDesk', CTL.WHY.omniSame));
+  X.openMonitor = function (id) { S.monSel = id; if (S.role !== 'admin') { S.role = 'admin'; location.hash = '#/a/monitor'; reload().catch(fail); } else go('#/a/monitor'); };
+  // "Run rules now": the sweep is the Admin's (am.rule_sweep).
+  X.sweepBtn = () => (X.grants['am.rule_sweep'] === true
+    ? `<button class="btn btn-ghost" onclick="runSweep()">${ic('refresh', 13)} Run rules now</button>`
+    : CTL.off('btn-ghost', 'refresh', 'Run rules now', denied()));
+  // Seller page. Tasks and playbook: the owner or the Head of AM (AM Appendix A, enforced by the
+  // server). Replies: the owner, or whoever took the conversation over (Admin: take over first).
+  canEdit = (s) => s.amId === ME || isHead(); // eslint-disable-line no-global-assign
+  const replyOwn = (s) => (s.takenOverById ? s.takenOverById === ME : s.amId === ME);
+  const protoConvPane = window.convPane;
+  window.convPane = function (s) { return protoConvPane(s, replyOwn(s)); };
+  X.canLog = (s) => s.amId === ME;
+  X.logWhy = (s) => (isHead() ? CTL.WHY.headCall : 'You can only log activity on sellers in your own book.');
+  // The 30-day playbook (AM 6.1, AC-14): each step as the server judges it — tickable, or greyed
+  // with the reason under it. A completed step stays completed and says when and by whom.
+  window.pbCard = function (s) {
+    const st = pbState(s), p = pbProgress(s), age = ageDays(s);
+    const srv = (k) => (s.playbook || []).find((x) => `d${x.day}` === k) || {};
+    return `<div class="card" style="margin-bottom:16px">
+    <div class="card-h">${ic('book', 16)}<h3>First 30 days</h3>
+      <span class="chip">day ${age}</span><span class="sp"></span>
+      <span class="tiny muted">${p.done} of ${p.total}${p.late ? ` · ${p.late} late` : ''}</span></div>
+    <div class="bar" style="margin-bottom:12px"><i style="width:${p.done / p.total * 100}%;background:${p.late ? '#F59E0B' : '#2B8A3E'}"></i></div>
+    ${st.map((x) => {
+      const v = srv(x.k);
+      const why = x.done ? `<span>Completed</span>${v.tickedAt ? ` <span>${fmt(v.tickedAt)}</span>` : ''}${v.tickedById ? ` · <span data-i18n="off">${esc(nameOf(v.tickedById))}</span>` : ''}`
+        : v.canTick ? '' : x.gateOk ? `<span>${esc(v.reason || denied())}</span>`
+          : `<span>Cannot tick</span> “<span>${x.t}</span>” — <span>${x.gateLbl || 'its gate'}</span> <span>is not met on this account</span>`;
+      return `<div class="pbrow ${x.done ? 'done' : ''} ${x.late ? 'late' : ''} ${x.now && !x.done ? 'now' : ''} ${v.canTick ? '' : 'off'}"
+        ${v.canTick ? `role="button" tabindex="0" onclick="togglePb('${s.id}','${x.k}')"` : 'aria-disabled="true"'}>
+      <span class="dn"><span class="d">Day</span><span class="v">${x.day}</span></span>
+      <span class="bx">${x.done ? ic('check', 12) : ''}</span>
+      <div style="flex:1;min-width:0">
+        <div class="t">${x.t}</div><div class="s">${x.s}</div>
+        ${x.gateLbl ? `<span class="gate ${x.gateOk ? 'ok' : 'no'}">${ic(x.gateOk ? 'check' : 'x', 10)} ${x.gateLbl}${x.gateOk ? ' met' : ' not met'}</span>` : ''}
+        ${x.late && !x.done ? `<span class="gate no" style="margin-left:5px">${ic('warn', 10)} ${age - x.day} days late</span>` : ''}
+        ${why ? `<div class="why" style="margin-top:4px">${why}</div>` : ''}
+      </div>
+    </div>`;
+    }).join('')}
+    <div class="banner bn-blue tiny" style="margin-top:10px">${ic('spark', 14)}
+      <div>Each step opens its own task on the day it comes due — rule <code>r10</code>. The gates are read from the seller's own record, so a step cannot be ticked into looking complete when the underlying number says otherwise.</div></div>
+  </div>`;
+  };
+  // Cross-market expansion, phase 1 (AM 6.3): a real expansion task, due in a week (phase 1 = 1 week).
+  const openAssessment = (s) => s.tasks.find((t) => t.type === 'expansion' && !t.done);
+  X.expansionBtn = function (s) {
+    const open = openAssessment(s);
+    if (open) return CTL.off('btn-ghost btn-sm', 'globe', 'Start assessment', `<span>Assessment open, due</span> <span>${fmt(open.dueAt)}</span>`, true);
+    if (!canEdit(s)) return CTL.off('btn-ghost btn-sm', 'globe', 'Start assessment', 'Not in your book.');
+    return `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();startExpansion('${s.id}')">${ic('globe', 12)} Start assessment</button>`;
+  };
+  window.startExpansion = function (id) {
+    const s = seller(id); if (!s || openAssessment(s)) return;
+    act(() => API.post(`/api/am/sellers/${s.id}/tasks`, {
+      taskType: 'expansion', title: `Cross-market assessment — ${s.biz}`, priority: 'normal', dueAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+      why: `Phase 1 of the expansion playbook. Health ${health(s)}, delivery ${s.deliveryRate}%, single market. Confirm product fit and margin after cross-border shipping.`,
+    }), 'Assessment opened — due in a week');
+  };
+  // An account manager sees only their own book (AM 7.5): no "All sellers" view, no AM column.
+  X.showAM = (view) => X.me?.role !== 'ACCOUNT_MANAGER' && ['all', 'onb', 'risk', 'thriving', 'inactive', 'returns', 'churned'].includes(view);
+  function bookViews() {
+    if (X.me.role !== 'ACCOUNT_MANAGER') return;
+    const i = VIEWS.findIndex((v) => v.k === 'all'); if (i >= 0) VIEWS.splice(i, 1);
+    // the search's own view: the whole book, churned sellers included; not drawn in the rail
+    if (!VIEWS.find((v) => v.k === 'book')) VIEWS.push({ k: 'book', g: 'search', label: 'Your book', f: () => true });
+  }
+  // Top search (Enter): the list the reader works from, with the line AM 7.5 asks for.
+  window.globalSearch = function (q) {
+    q = String(q || '').trim(); if (!q) return;
+    S.q = q; S.sel = [];
+    if (S.role === 'admin') { S.view = 'all'; go('#/a/sellers'); } else { S.view = X.me.role === 'ACCOUNT_MANAGER' ? 'book' : 'all'; go('#/portfolio'); }
+  };
+  function searchBanner() {
+    if (!S.q) return '';
+    const scope = X.me.role === 'ACCOUNT_MANAGER' ? 'searched your book only' : 'searched every seller on the platform';
+    return `<div class="banner bn-slate tiny" id="search-scope" style="margin:-4px 0 12px;align-items:center">${ic('search', 14)}
+      <div><span>Results for</span> “<span data-i18n="off">${esc(S.q)}</span>” — <span>${scope}</span><span>, by business, owner, code, city and phone.</span></div>
+      <button class="btn btn-ghost btn-sm" style="margin-inline-start:auto;flex:0 0 auto" onclick="S.q='';render()">Clear search</button></div>`;
+  }
+  const withSearch = (html) => html.replace('<div class="tbl-wrap">', searchBanner() + '<div class="tbl-wrap">');
+
   // ───────────── date filter (My Portfolio, All Sellers) ─────────────
   // The Admin's request (2 Nov): every list can be narrowed to the merchants that registered on MDM
   // in a period — quick choices or a custom range. The prototype's search bar keeps its search and
@@ -514,7 +616,7 @@
   window.viewPortfolio = function () {
     // the portfolio reads S.sellers directly: give it the period's sellers while it draws
     const all = S.sellers; S.sellers = all.filter(inPeriod);
-    try { return withPeriod(protoViewPortfolio()); } finally { S.sellers = all; }
+    try { return withSearch(withPeriod(protoViewPortfolio())); } finally { S.sellers = all; }
   };
 
   // ───────────── deleting sellers (Head of AM = Administrator, All Sellers) ─────────────
@@ -524,7 +626,7 @@
   const MAX_DELETE = 200;
   const protoViewAllSellers = window.viewAllSellers;
   window.viewAllSellers = function () {
-    let html = withPeriod(protoViewAllSellers());
+    let html = withSearch(withPeriod(protoViewAllSellers()));
     if (S.sel.length) {
       const can = X.grants?.['records.delete'] === true; const over = S.sel.length > MAX_DELETE;
       const del = can && !over
@@ -576,6 +678,7 @@
     if (!['ACCOUNT_MANAGER', 'ADMIN'].includes(me.user.role)) { location.href = '/oa'; return; }
     ME = me.user.id; // eslint-disable-line no-global-assign
     S.role = me.user.role === 'ACCOUNT_MANAGER' ? 'am' : 'admin';
+    bookViews();
     if (S.role === 'admin' && !(location.hash || '').startsWith('#/a/') && !(location.hash || '').startsWith('#/seller/')) location.hash = '#/a/ops';
     await reload();
     setInterval(() => {

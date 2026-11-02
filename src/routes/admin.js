@@ -1,14 +1,21 @@
 // Admin: temporary elevation and the audit trail.
 import { Router } from 'express';
-import { ah } from '../http/errors.js';
+import { ah, badRequest } from '../http/errors.js';
 import { requirePermission } from '../auth/middleware.js';
 import { grantElevation, listElevations, revokeElevation } from '../auth/elevation.js';
 import { listUsers, removeUser, restoreUser, setActive, setPassword } from '../auth/users.js';
 import { deleteRecords, listDeleted, restoreDeleted } from '../core/deletion.js';
 import { dateRange } from '../http/range.js';
 import { prisma } from '../db.js';
+import { OA_APPENDIX_A, ROLES, grant } from '../auth/permissions.js';
 
 export const adminRouter = Router();
+
+// A role's onboarding grants, row by row as OA Appendix A lists them (read-only).
+adminRouter.get('/roles/:role/grants', requirePermission('roles.manage'), ah(async (req, res) => {
+  if (!ROLES.includes(req.params.role)) throw badRequest(`role must be one of ${ROLES.join(', ')}.`);
+  res.json(OA_APPENDIX_A.map((r) => ({ ...r, value: grant(req.params.role, r.key) })));
+}));
 
 adminRouter.get('/elevations', requirePermission('roles.manage'), ah(async (req, res) => {
   res.json(await listElevations({ activeOnly: req.query.all !== 'true' }));

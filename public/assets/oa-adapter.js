@@ -171,6 +171,7 @@
     }));
     AMS = users.filter((u) => u.role === 'ACCOUNT_MANAGER').map((u) => u.name); // eslint-disable-line no-global-assign
     S.leads = leads.map(leadOf);
+    await loadViews();
     await loadAnalytics();
     if (isAdminView) await loadAdmin();
     render();
@@ -186,16 +187,18 @@
   }
 
   async function loadAdmin() {
-    const [audit, versions, templates, usage, elevations] = await Promise.all([
+    const [audit, versions, templates, usage, elevations, stateMachine, roleGrants] = await Promise.all([
       API.get('/api/admin/audit?limit=100').catch(() => []),
       API.get('/api/config/versions').catch(() => []),
       API.get('/api/templates?module=oa').catch(() => []),
       API.get('/api/templates/usage?days=90').catch(() => ({ sends: {} })),
       API.get('/api/admin/elevations').catch(() => null),
+      X.stateMachine ? X.stateMachine : API.get('/api/oa/state-machine').catch(() => null),
+      X.grants['roles.manage'] === true ? API.get('/api/admin/roles/OA_AGENT/grants').catch(() => null) : null,
     ]);
     TPL_STATE = Object.fromEntries(templates.map((t) => [t.key, { on: t.enabled, used: usage.sends[t.key] ?? 0, status: t.status }])); // eslint-disable-line no-global-assign
     for (const t of TEMPLATES) if (!TPL_STATE[t.key]) TPL_STATE[t.key] = { on: false, used: 0 };
-    X.elevations = elevations;
+    X.elevations = elevations; X.stateMachine = stateMachine; X.roleGrants = roleGrants;
     if (!X.auditFiltered) AUDIT.length = 0; // a filtered audit view keeps what the filter read
     for (const e of X.auditFiltered ? [] : audit) {
       AUDIT.push({
@@ -478,10 +481,13 @@
     act(() => API.post(`/api/oa/tickets/${l.id}/reassign`, { toUserId: to, reason }), `Assigned to ${nameOf(to)}`);
   };
   window.assignAll = function () {
-    const held = S.leads.filter((l) => !l.ownerId && isOpen(l));
-    if (!held.length) return toast('Nothing is being held right now');
-    reasonModal(`Assign ${held.length} held lead(s) over capacity`, 'Each lead goes to the agent with the most free minutes. Results are reported per ticket.', 'Assign all',
-      (reason) => act(async () => bulkToast(await API.post('/api/oa/bulk', { op: 'assign_over_capacity', ticketIds: held.map((l) => l.id), reason }), 'assigned over capacity')));
+    const held = S.leads.filter((l) => !l.ownerId && isOpen(l)).sort((a, b) => new Date(a.registeredAt) - new Date(b.registeredAt));
+    if (!held.length) return; // the button is greyed with "Nothing is being held right now"
+    const run = held.slice(0, MAX_BULK);
+    const rest = held.length - run.length;
+    reasonModal(`Assign ${run.length} held lead(s) over capacity`,
+      `${rest ? `At most ${MAX_BULK} per run: the ${run.length} that have waited longest go now, press again for the other ${rest}. ` : ''}Each lead goes to the agent with the most free minutes. Results are reported per ticket.`, 'Assign all',
+      (reason) => act(async () => bulkToast(await API.post('/api/oa/bulk', { op: 'assign_over_capacity', ticketIds: run.map((l) => l.id), reason }), 'assigned over capacity')));
   };
 
   // ───────────── configuration: draft → simulate → publish → roll back (server) ─────────────
@@ -608,7 +614,7 @@
     closeModal();
     act(() => API.post('/api/admin/elevations', { userId: g('el-user'), role: g('el-role'), endsAt, reason }), 'Cover granted — it expires by itself');
   };
-  window.togPerm = function () { toast('Roles and grants are fixed by the specification; changes are an Administrator release.', 'warn'); };
+  window.togPerm = function () {}; // the switches are read-only (see cfgPerm below)
 
   // ───────────── queue filters ─────────────
   // The prototype's funnel buttons name them: country, source, channel, window state, owner (the
@@ -617,7 +623,7 @@
   // Admin's request, 2 Nov). A filter narrows the current view after its own condition and the
   // search; the rail counts stay the view's. The choice lives in S, so a language switch or a route
   // change keeps it (OA 6.3, AC-OA-24). Changing a filter clears the selection, so a bulk action only
-  // ever acts on rows the Admin can see. "Save this view" (OA 6.3) is not built yet.
+  // ever acts on rows the Admin can see. "Save this view" (OA 6.3) stores them under a name (below).
   const FILTER_KEYS = ['country', 'source', 'channel', 'win', 'owner'];
   S.filters = S.filters || { country: '', source: '', channel: '', win: '', owner: '', when: '', from: '', to: '' };
   S.filtersOpen = false;
@@ -639,8 +645,8 @@
       default: return { from: '', to: '' };
     }
   }
-  function inRange(at) {
-    const f = S.filters; const r = whenRange(f.when, f.from, f.to);
+  function inRange(at, f = S.filters) {
+    const r = whenRange(f.when, f.from, f.to);
     if (!r.from && !r.to) return true;
     if (!at) return false;
     const d = new Date(at);
@@ -658,13 +664,12 @@
       owner: [['me', 'Me'], ...TEAM.filter((t) => t.id !== ME).map((t) => [t.id, t.name]), ['none', 'Waiting for capacity']],
     };
   }
-  function passesFilters(l) {
-    const f = S.filters;
+  function passesFilters(l, f = S.filters) {
     if (f.country && l.country !== f.country) return false;
     if (f.source && l.source !== f.source) return false;
     if (f.channel && l.channel !== f.channel) return false;
     if (f.win && !(isOpen(l) && winState(l) === f.win)) return false;
-    if (!inRange(l.enteredAt)) return false;
+    if (!inRange(l.enteredAt, f)) return false;
     if (f.owner === 'me') return l.ownerId === ME;
     if (f.owner === 'none') return !l.ownerId && isOpen(l);
     if (f.owner) return l.ownerId === f.owner;
@@ -682,9 +687,9 @@
     const v = S.filters[k]; const o = filterOptions()[k].find((x) => x[0] === v); return o ? o[1] : v;
   };
   const protoFiltered = window.filtered;
-  window.filtered = function () { return protoFiltered().filter(passesFilters); };
+  window.filtered = function () { return protoFiltered().filter((l) => passesFilters(l)); };
   const protoAdmFiltered = window.admFiltered;
-  window.admFiltered = function () { return protoAdmFiltered().filter(passesFilters); };
+  window.admFiltered = function () { return protoAdmFiltered().filter((l) => passesFilters(l)); };
   X.setFilter = function (k, v) {
     if (![...FILTER_KEYS, 'when', 'from', 'to'].includes(k)) return;
     S.filters[k] = v;
@@ -730,12 +735,16 @@
     const at = html.indexOf('onclick="MDM.toggleFilters()"');
     const end = at < 0 ? -1 : html.indexOf('</button>', at);
     if (end >= 0) html = html.slice(0, end + 9) + datePart() + html.slice(end + 9);
+    html = html.replace('<div class="tbl-wrap">', searchBanner() + '<div class="tbl-wrap">');
     if (S.filtersOpen) html = html.replace('<div class="tbl-wrap">', filterPanel() + '<div class="tbl-wrap">');
     else if (n) html = html.replace('<div class="tbl-wrap">', filterLine() + '<div class="tbl-wrap">');
     return html;
   };
   const protoViewQueue = window.viewQueue;
-  window.viewQueue = function () { return funnel(protoViewQueue(), 'Filters — country, source, channel, window state, owner'); };
+  window.viewQueue = function () {
+    return funnel(protoViewQueue(), 'Filters — country, source, channel, window state, owner')
+      .replace(/onclick="S\.view='(pv_[^']+)';render\(\)"/g, (_m, k) => `onclick="MDM.openView('${k}')"`);
+  };
 
   // ───────────── deleting leads (Admin, All Leads) ─────────────
   // The merchant is deleted here only — MDM is never touched — and the sync leaves it out until it is
@@ -745,7 +754,8 @@
   const canDelete = () => X.grants?.['records.delete'] === true;
   const protoViewAdminLeads = window.viewAdminLeads;
   window.viewAdminLeads = function () {
-    let html = funnel(protoViewAdminLeads(), 'Filters — country, source, channel, owner, window state, age');
+    let html = funnel(protoViewAdminLeads(), 'Filters — country, source, channel, owner, window state, age')
+      .replace(/onclick="S\.view='(pv_[^']+)';S\.sel=\[\];render\(\)"/g, (_m, k) => `onclick="MDM.openView('${k}')"`);
     if (S.sel.length) {
       const over = S.sel.length > MAX_DELETE;
       const del = canDelete()
@@ -844,6 +854,207 @@
       html = html.replace('<div class="grid2">', panel + '<div class="grid2">');
     }
     return html;
+  };
+
+  // ───────────── controls the prototype left as notes ─────────────
+  // Each one does what the specs define, or is drawn disabled with its reason written under it
+  // (OA 6.2) — never a pop-up note. The reasons are in /assets/controls.js.
+  const MAX_BULK = 200; // OA 13.2: the bulk ceiling
+  const canAdminView = () => API.canSeeAdmin(X.me?.role);
+  const denied = () => CTL.denied(X.me.role);
+  // Sidebar. OmniDesk: the OmniDesk Monitor is this app's view of every conversation, for the
+  // roles that may open it (OA 9.2); the full inbox is the parent platform's.
+  X.navOmni = () => (canAdminView()
+    ? `<button class="nav-item" onclick="go('#/a/monitor')"><span class="nav-ico" style="background:#EEF2FF;color:#4F46E5">${ic('chat', 15)}</span> OmniDesk <span class="chev">${ic('chev', 13)}</span></button>`
+    : CTL.navOff('chat', 'OmniDesk', CTL.WHY.omni));
+  // "Account Managers" and "Platform Settings": the Admin sees every seller and manager (AM 9.1) and
+  // runs the integrations; other roles have neither.
+  X.navAm = () => (X.grants['seller.view'] === true ? CTL.navTo('users', 'Account Managers', '/am#/a/ops', '', 'adm') : CTL.navOff('users', 'Account Managers', denied()));
+  X.navSettings = () => (X.grants['integrations.manage'] === true ? CTL.navTo('cog', 'Platform Settings', '/integrations', '', 'adm') : CTL.navOff('cog', 'Platform Settings', denied()));
+  // "Open in OmniDesk": the same conversation in the Monitor (OA 6.4: one conversation, two views).
+  X.omniBtn = (id) => (canAdminView()
+    ? `<button class="btn btn-ghost btn-sm" onclick="MDM.openMonitor('${id}')">${ic('link', 12)} Open in OmniDesk</button>`
+    : CTL.off('btn-ghost btn-sm', 'link', 'Open in OmniDesk', CTL.WHY.omniSame));
+  X.openMonitor = function (id) {
+    const l = lead(id); if (!l) return;
+    S.monF = l.stage === 'activated' ? 'activated' : 'all'; S.monSel = id;
+    go('#/a/monitor');
+  };
+  // Export (Appendix A: Admin; a Manager with an Admin's approval; nobody else).
+  X.exportBtn = (kind) => {
+    const g = X.grants['data.export'];
+    if (g === true) return `<button class="btn btn-ghost" onclick="MDM.exportCsv('${kind}')">${ic('file', 14)} Export</button>`;
+    return CTL.off('btn-ghost', 'file', 'Export', g === 'approval' ? 'Needs approval from an Admin.' : denied());
+  };
+  X.releaseBtn = () => {
+    const held = S.leads.filter((l) => !l.ownerId && isOpen(l)).length;
+    const why = X.grants['onboarding.assign_over_capacity'] !== true ? denied() : !held ? 'Nothing is being held right now' : null;
+    return why ? CTL.off('btn-ghost', 'users', 'Release held leads', why) : `<button class="btn btn-ghost" onclick="assignAll()">${ic('users', 14)} Release held leads</button>`;
+  };
+  // All Leads selection bar. Reassign and Change status need "Bulk internal changes"; Add tag waits
+  // for the tag list; bulk template sends need WhatsApp (Appendix A: "Bulk outbound messaging").
+  X.bulkButtons = () => {
+    const can = X.grants['onboarding.bulk_internal'] === true;
+    return (can
+      ? `<button class="btn btn-ghost btn-sm" onclick="bulkAssign()">${ic('users', 12)} Reassign</button>
+    <button class="btn btn-ghost btn-sm" onclick="bulkStatus()">${ic('spark', 12)} Change status</button>`
+      : CTL.off('btn-ghost btn-sm', 'users', 'Reassign', denied()) + CTL.off('btn-ghost btn-sm', 'spark', 'Change status', denied()))
+      + CTL.off('btn-ghost btn-sm', 'file', 'Add tag', can ? CTL.WHY.tags : denied())
+      + CTL.off('btn-ghost btn-sm', 'wa', 'Bulk template send', X.grants['onboarding.bulk_outbound'] === true ? CTL.WHY.whatsapp : denied());
+  };
+  // Configuration → Team: an agent is a person imported from MDM with the Onboarding agent role.
+  X.addAgentBtn = () => (X.grants['integrations.manage'] === true
+    ? `<button class="btn btn-ghost btn-sm" title="Import from People on MDM, with the role Onboarding agent" onclick="location.href='/integrations#staff'">${ic('plus', 12)} Add agent</button>`
+    : CTL.off('btn-ghost btn-sm', 'plus', 'Add agent', denied()));
+  // Configuration → Statuses: the service's own state machine (OA 2.4, 2.5).
+  const ST_LABEL = { new: 'New', failed_to_contact: 'Failed to Contact', prequalified: 'Pre-qualified', qualified: 'Qualified', activated: 'Activated', cold_lead: 'Cold Lead', junk_lead: 'Junk Lead' };
+  X.statusRows = () => (Array.isArray(X.stateMachine) ? X.stateMachine.map((r) => [ST_LABEL[r.status] || r.status,
+    r.to.length ? r.to.map((t) => ST_LABEL[t] || t).join(' · ') + (r.category === 'closed' ? ' (reopen)' : '') : '— (terminal for this ticket type)',
+    r.category, r.required]) : null);
+  // Configuration → Team: the live assignment settings (OA 4.2, Appendix D) and business hours (3.4).
+  const DAY = { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' };
+  const WEEK = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  function daysText(v) {
+    const ds = String(v || '').split(',').map((d) => d.trim().toLowerCase()).filter((d) => DAY[d]);
+    if (!ds.length) return '—';
+    const ix = ds.map((d) => WEEK.indexOf(d));
+    const run = ix.every((n, i) => !i || n === ix[i - 1] + 1);
+    return run && ds.length > 2 ? `${DAY[ds[0]]}–${DAY[ds[ds.length - 1]]}` : ds.map((d) => DAY[d]).join(', ');
+  }
+  X.teamLine = function (k) {
+    const c = X.config || {};
+    if (k === 'strategy') {
+      if (c['oa.assignment_strategy'] !== 'most_free_minutes') return esc(c['oa.assignment_strategy'] ?? '—');
+      return c['oa.assignment_skill'] === 'contact.country' ? "Most free minutes on the lead's market — falls back to the whole team" : 'Most free minutes across the whole team';
+    }
+    if (k === 'tiebreak') return c['oa.assignment_tiebreak'] === 'fewest_open_leads' ? 'Agent with fewest open leads' : esc(c['oa.assignment_tiebreak'] ?? '—');
+    if (k === 'hours') return `${daysText(c['oa.business_days'])} ${esc(c['oa.business_open'] ?? '')}–${esc(c['oa.business_close'] ?? '')} · ${esc(c['oa.business_timezone'] ?? '')}`;
+    if (k === 'outOfHours') return 'Held with reason "outside business hours", assigned at the first sweep after the shift opens';
+    return '—';
+  };
+  // Configuration → Roles & permissions: the Onboarding Agent role's grants, row by row as Appendix A
+  // lists them. Read-only here until the client decides whether they may be switched.
+  const SCOPE = { own: 'own', team: 'team, read', request: 'request only', own_gated: 'own, gated', own_reason: 'own, with reason', with_reason: 'with reason', escalate: 'escalate', approval: 'approval', own_contacts: 'own contacts' };
+  window.cfgPerm = function () {
+    const rows = Array.isArray(X.roleGrants) ? X.roleGrants : null;
+    const v = (key) => rows?.find((r) => r.key === key)?.value;
+    const on = rows ? rows.filter((r) => r.value !== false).length : 0;
+    return `<div class="grid2">
+    <div class="card">
+      <div class="card-h">${ic('shield', 16)}<h3>Onboarding Agent — role grants</h3><span class="sp"></span>
+        <span class="chip"><span class="num">${on}</span> <span>of</span> <span class="num">${rows ? rows.length : 0}</span></span></div>
+      <div class="tiny muted" style="margin-bottom:6px">Permissions are granted to roles, never to a named person. There is no path for a personal exception.</div>
+      <div class="why" style="display:block;margin-bottom:8px">${CTL.WHY.perms}</div>
+      ${rows ? rows.map((r) => `<div class="cfgrow" style="padding:9px 0">
+        <div class="k"><div class="t" style="font-size:12.5px">${esc(r.label)}</div></div>
+        ${typeof r.value === 'string' ? `<span class="chip">${SCOPE[r.value] || esc(r.value)}</span>` : ''}
+        <span class="sw ${r.value !== false ? 'on' : ''}" role="switch" aria-checked="${r.value !== false}" aria-disabled="true" style="cursor:not-allowed;opacity:.55"></span></div>`).join('')
+        : `<div class="tiny muted">${denied()}</div>`}
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card">
+        <div class="card-h">${ic('spark', 16)}<h3>What these choices do</h3></div>
+        <div class="banner bn-blue" style="margin-bottom:10px">${ic('shield', 15)}
+          <div><b>Enforced in the service, not the interface.</b> Removing a button is not a permission —
+          the same call made directly by an unauthorised role is rejected.</div></div>
+        <div class="kv"><span class="k">View all onboarding tickets</span><span class="v">${v('onboarding.view_all') ? 'On — agents see the team queue read-only' : 'Off — agents see only their own'}</span></div>
+        <div class="kv"><span class="k">Reassign / transfer</span><span class="v">${v('onboarding.reassign') === true ? 'On' : 'Off — agents request, a shift lead decides'}</span></div>
+        <div class="kv"><span class="k">Reject seller</span><span class="v">${v('onboarding.reject') === true ? 'On' : 'Off — suspected fraud escalates to the Commercial Director'}</span></div>
+        <div class="kv"><span class="k">View reports</span><span class="v">${v('reports.view') === 'own' ? 'Own scope only' : v('reports.view') ? 'On' : 'Off'}</span></div>
+        <div class="kv"><span class="k">Order card fields</span><span class="v">${v('finance.view_cost') ? 'Shown' : 'Cost, margin and settlement withheld'}</span></div>
+      </div>
+      <div class="card">
+        <div class="card-h">${ic('users', 16)}<h3>Temporary elevation</h3></div>
+        <p class="tiny muted" style="margin:0 0 12px">Cover for leave without permanently widening a role. The elevation expires by itself and the reversion is audited.</p>
+        ${X.elevationsHTML()}
+      </div>
+    </div>
+  </div>`;
+  };
+  // Performance → "Open" on an agent: All Leads showing only that agent's leads.
+  X.openAgent = function (id) {
+    for (const k of [...FILTER_KEYS, 'when', 'from', 'to']) S.filters[k] = '';
+    S.filters.owner = id; S.view = 'all'; S.q = ''; S.sel = [];
+    go('#/a/leads');
+  };
+  // Top search (Enter): the list the viewer works from, with a line that says what was searched.
+  window.globalSearch = function (q) {
+    q = String(q || '').trim(); if (!q) return;
+    S.q = q; S.view = 'all'; S.sel = [];
+    go(S.role === 'admin' ? '#/a/leads' : '#/queue');
+  };
+  function searchBanner() {
+    if (!S.q) return '';
+    return `<div class="banner bn-slate tiny" id="search-scope" style="margin:-4px 0 12px;align-items:center">${ic('search', 14)}
+      <div><span>Results for</span> “<span data-i18n="off">${esc(S.q)}</span>” — <span>searched every onboarding lead you can open, by name, phone, store, contact code and ticket. Conversations, orders and articles are not searched.</span></div>
+      <button class="btn btn-ghost btn-sm" style="margin-inline-start:auto;flex:0 0 auto" onclick="S.q='';render()">Clear search</button></div>`;
+  }
+
+  // ───────────── personal saved views (OA 6.3) ─────────────
+  // "Save this view" stores the current view, its filters and its sort under a name the agent picks.
+  // It shows under "Mine" with a live count; opening it puts its filters and sort back. Only its
+  // owner sees it, and only its owner deletes it. No column set: the prototype has no column picker.
+  X.views = [];
+  async function loadViews() {
+    X.views = await API.get('/api/views?module=oa').catch(() => []);
+    for (let i = VIEWS.length - 1; i >= 0; i--) if (String(VIEWS[i].k).startsWith('pv_')) VIEWS.splice(i, 1);
+    for (const v of X.views) {
+      const base = VIEWS.find((x) => x.k === v.base) || VIEWS.find((x) => x.k === 'all');
+      const f = { country: '', source: '', channel: '', win: '', owner: '', when: '', from: '', to: '', ...v.filters };
+      VIEWS.push({ k: 'pv_' + v.id, g: 'me', label: esc(v.name), f: (l) => base.f(l) && passesFilters(l, f) });
+    }
+    if (String(S.view).startsWith('pv_') && !VIEWS.find((x) => x.k === S.view)) S.view = 'mine';
+  }
+  const savedOf = (k) => X.views.find((v) => 'pv_' + v.id === k);
+  X.saveViewBtn = function () {
+    if (X.grants['macro.author_personal'] !== true) return CTL.off('btn-ghost', 'plus', 'Save this view', denied());
+    const cur = savedOf(S.view);
+    return `<button class="btn btn-ghost" onclick="MDM.saveView()">${ic('plus', 14)} Save this view</button>`
+      + (cur ? ` <button class="btn btn-ghost" onclick="MDM.deleteView('${S.view}')">${ic('x', 14)} Delete this view</button>` : '');
+  };
+  X.openView = function (k) {
+    const v = savedOf(k); if (!v) return;
+    S.view = k; S.sort = v.sort === 'newest' ? 'newest' : 'due'; S.sel = [];
+    for (const key of [...FILTER_KEYS, 'when', 'from', 'to']) S.filters[key] = v.filters[key] || '';
+    render();
+  };
+  const baseOf = () => savedOf(S.view)?.base ?? (VIEWS.find((x) => x.k === S.view) ? S.view : 'all');
+  X.saveView = function () {
+    const base = baseOf(); const n = activeFilters();
+    openModal(`<div class="modal-h">${ic('plus', 18)}<h3>Save this view</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b">
+        <label class="fl">Name</label>
+        <input class="fi" id="m-name" maxlength="60" autocomplete="off" oninput="document.getElementById('modal-go').disabled=!this.value.trim()">
+        <div class="tiny muted" style="margin-top:12px;line-height:1.9">
+          <div><span>Starts from</span>: <b>${viewDef(base).label}</b></div>
+          <div><span>Filters</span>: ${n.length ? n.map((k) => `<span class="chip"><span>${FILTER_LABEL[k]}</span> · <span ${k === 'source' || (k === 'when' && S.filters.when === 'custom') ? 'data-i18n="off"' : ''}>${esc(filterText(k))}</span></span>`).join(' ') : '<span>none</span>'}</div>
+          <div><span>Sorted by</span>: <span>${S.sort === 'newest' ? 'newest registration' : 'next action due'}</span></div>
+        </div>
+        <div class="tiny muted" style="margin-top:8px">Only you see it, under “Mine”. Its count is live.</div>
+      </div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" id="modal-go" disabled onclick="MDM.doSaveView()">Save</button></div>`);
+    setTimeout(() => document.getElementById('m-name')?.focus(), 0);
+  };
+  X.doSaveView = function () {
+    const name = (document.getElementById('m-name')?.value || '').trim(); if (!name) return;
+    const filters = {}; for (const k of [...FILTER_KEYS, 'when', 'from', 'to']) if (S.filters[k]) filters[k] = S.filters[k];
+    const base = baseOf(); const sort = S.sort === 'newest' ? 'newest' : 'due';
+    closeModal();
+    act(async () => { const v = await API.post('/api/views', { module: 'oa', name, base, filters, sort }); S.view = 'pv_' + v.id; }, 'View saved — under “Mine”');
+  };
+  X.deleteView = function (k) {
+    const v = savedOf(k); if (!v) return;
+    openModal(`<div class="modal-h">${ic('x', 18)}<h3>Delete this view</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b"><p style="margin:0">“<span data-i18n="off">${esc(v.name)}</span>” — <span>only the saved view goes. No lead changes.</span></p></div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" onclick="MDM.doDeleteView('${v.id}')">Delete</button></div>`);
+  };
+  X.doDeleteView = function (id) {
+    closeModal();
+    act(async () => { await API.del(`/api/views/${id}`); S.view = 'mine'; }, 'View deleted');
   };
 
   // ───────────── boot ─────────────

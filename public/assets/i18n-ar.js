@@ -1902,3 +1902,74 @@ Object.assign(window.I18N_AR, {
     'Assign now': 'إسناد الآن', 'held for capacity': 'محتجز لعدم توفر السعة',
   });
 })();
+
+// Controls that used to show a placeholder note (2 Nov): their reasons, saved views, the search
+// line, the Configuration tables. Existing translations are kept.
+(function () {
+  const add = (dict, entries) => { for (const [k, v] of Object.entries(entries)) if (!(k in dict)) dict[k] = v; };
+  add(window.I18N_AR, {
+    'Part of the MDM platform — not in this app': 'جزء من منصة MDM — ليس في هذا التطبيق',
+    'The full OmniDesk inbox is not connected to this app yet': 'صندوق OmniDesk الكامل غير متصل بهذا التطبيق بعد',
+    'The full OmniDesk inbox is not connected to this app yet — this is the same conversation': 'صندوق OmniDesk الكامل غير متصل بهذا التطبيق بعد — هذه هي المحادثة نفسها',
+    'Onboarding articles are in Resource Hub': 'مقالات التهيئة موجودة في مركز الموارد',
+    "Your sellers' onboarding history is not in this console yet": 'سجل تهيئة بائعيك غير موجود في هذه الواجهة بعد',
+    "Read on the MDM platform — each seller's page shows their numbers": 'تُقرأ على منصة MDM — صفحة كل بائع تعرض أرقامه',
+    "Read on the MDM platform — each seller's page shows their wallet": 'تُقرأ على منصة MDM — صفحة كل بائع تعرض محفظته',
+    'The Hub has no public address yet': 'ليس للمركز عنوان عام بعد', 'Recording not uploaded yet': 'لم يُرفع التسجيل بعد',
+    'Not written yet': 'لم يُكتب بعد', 'Written by the Senior OA': 'يكتبه وكيل التهيئة الأول',
+    'The weekly report is not set up yet': 'التقرير الأسبوعي غير مُعدّ بعد', 'Tags are not set up yet': 'الوسوم غير مُعدّة بعد',
+    'WhatsApp is not connected': 'واتساب غير متصل',
+    'New rules are not available yet — the ten rules below can be switched on or off and tuned': 'القواعد الجديدة غير متاحة بعد — يمكن تشغيل القواعد العشر أدناه أو إيقافها وضبطها',
+    'Extra fields are not available yet': 'الحقول الإضافية غير متاحة بعد', 'The seven onboarding statuses are fixed for now': 'حالات التهيئة السبع ثابتة حاليًا',
+    'Read-only for now: these are the grants of the permission table in your spec (Appendix A)': 'للقراءة فقط حاليًا: هذه صلاحيات جدول الأذونات في مواصفاتك (الملحق A)',
+    "Calls are logged by the seller's account manager": 'يسجّل المكالمات مديرُ حساب البائع',
+    'Not available to the Onboarding Agent role.': 'غير متاح لدور وكيل التهيئة.', 'Not available to the Shift lead role.': 'غير متاح لدور قائد الوردية.',
+    'Not available to the Manager role.': 'غير متاح لدور المدير.', 'Not available to the Admin role.': 'غير متاح لدور المسؤول.',
+    'Not available to the Account Manager role.': 'غير متاح لدور مدير الحساب.', 'Not available to the Read-only role.': 'غير متاح لدور القراءة فقط.',
+    'Change status': 'تغيير الحالة', 'Add tag': 'إضافة وسم', 'Add status': 'إضافة حالة', 'Add agent': 'إضافة وكيل', 'Add number': 'إضافة رقم',
+    'Delete this view': 'حذف هذا العرض', 'Start assessment': 'بدء التقييم', 'Assessment open, due': 'التقييم مفتوح، موعده',
+    'Assessment opened — due in a week': 'فُتح التقييم — موعده بعد أسبوع',
+    'Cannot tick': 'لا يمكن تأشير', 'is not met on this account': 'غير متحقق في هذا الحساب', 'its gate': 'شرطها',
+    'Starts from': 'يبدأ من', 'Filters': 'عوامل التصفية', 'Sorted by': 'الترتيب حسب', 'newest registration': 'أحدث تسجيل', 'next action due': 'الإجراء التالي المستحق',
+    'Only you see it, under “Mine”. Its count is live.': 'لا يراه سواك، تحت «لي». عدده مباشر.', 'Save': 'حفظ',
+    'View saved — under “Mine”': 'حُفظ العرض — تحت «لي»', 'View deleted': 'حُذف العرض',
+    'only the saved view goes. No lead changes.': 'يُحذف العرض المحفوظ فقط. لا يتغير أي عميل محتمل.',
+    'Results for': 'نتائج',
+    'searched every onboarding lead you can open, by name, phone, store, contact code and ticket. Conversations, orders and articles are not searched.':
+      'بُحث في كل عملاء التهيئة الذين يمكنك فتحهم، بالاسم والهاتف والمتجر ورمز جهة الاتصال والتذكرة. لا يُبحث في المحادثات والطلبات والمقالات.',
+    'Clear search': 'مسح البحث', 'searched your book only': 'بُحث في محفظتك فقط', 'searched every seller on the platform': 'بُحث في كل البائعين على المنصة',
+    ', by business, owner, code, city and phone.': '، بالنشاط والمالك والرمز والمدينة والهاتف.', 'Your book': 'محفظتك',
+    "Most free minutes on the lead's market — falls back to the whole team": 'أكثر دقائق متاحة في سوق العميل — وإلا فالفريق كله',
+    'Most free minutes across the whole team': 'أكثر دقائق متاحة على مستوى الفريق كله', 'Agent with fewest open leads': 'الوكيل صاحب أقل عدد من العملاء المفتوحين',
+    'Held with reason "outside business hours", assigned at the first sweep after the shift opens': 'يُحتجز بسبب "خارج ساعات العمل"، ويُسند في أول فحص بعد بدء الوردية',
+    'Failed to Contact · Pre-qualified · Qualified · Junk Lead': 'تعذّر التواصل · مؤهَّل مبدئياً · مؤهَّل · عميل غير جاد',
+    'Pre-qualified · Qualified · Cold Lead · Junk Lead': 'مؤهَّل مبدئياً · مؤهَّل · غير مهتم · عميل غير جاد',
+    'Qualified · Failed to Contact · Cold Lead · Junk Lead': 'مؤهَّل · تعذّر التواصل · غير مهتم · عميل غير جاد',
+    'Activated · Failed to Contact · Cold Lead': 'مُفعَّل · تعذّر التواصل · غير مهتم',
+    '— (terminal for this ticket type)': '— (نهائية لهذا النوع من التذاكر)', 'Pre-qualified (reopen)': 'مؤهَّل مبدئياً (إعادة فتح)',
+    'To Cold: a reason, or the cadence cutoff having been reached': 'إلى غير مهتم: سبب، أو بلوغ حدّ الإيقاع',
+    'To Cold: a written reason': 'إلى غير مهتم: سبب مكتوب',
+    'To Activated: all five qualification criteria true and a complete handoff record': 'إلى مُفعَّل: معايير التأهيل الخمسة كلها متحققة وسجل تسليم كامل',
+    'A written reason, recorded against the actor': 'سبب مكتوب، يُسجَّل باسم المنفّذ',
+    'open': 'مفتوحة', 'solved': 'محلولة',
+    'View own tickets': 'عرض التذاكر الخاصة', 'View all onboarding tickets': 'عرض كل تذاكر التهيئة', 'Public reply to contact': 'رد علني على جهة الاتصال',
+    'Edit ticket properties': 'تعديل خصائص التذكرة', 'Send approved template': 'إرسال قالب معتمد', 'Reassign / transfer': 'إعادة الإسناد / النقل',
+    'Take over from monitor': 'الاستلام من المراقبة', 'Activate seller (accept)': 'تفعيل البائع (قبول)', 'Reject seller': 'رفض البائع',
+    'Reopen cold / junk': 'إعادة فتح غير المهتم / غير الجاد', 'Bulk internal changes': 'تغييرات داخلية جماعية', 'Bulk outbound messaging': 'مراسلة صادرة جماعية',
+    'Listen to call recordings': 'الاستماع إلى تسجيلات المكالمات', 'See cost / fee / margin': 'رؤية التكلفة / الرسوم / الهامش',
+    'Author team macro / template': 'إنشاء ماكرو / قالب للفريق', 'Author personal macro / view': 'إنشاء ماكرو / عرض شخصي',
+    'Manage automation / cadence': 'إدارة الأتمتة / الإيقاع', 'Manage roles & permissions': 'إدارة الأدوار والصلاحيات', 'View reports': 'عرض التقارير',
+    'Export data': 'تصدير البيانات', 'View audit log': 'عرض سجل التدقيق',
+    'own': 'الخاصة', 'team, read': 'الفريق، قراءة', 'request only': 'طلب فقط', 'own, gated': 'الخاصة، بشرط', 'own, with reason': 'الخاصة، مع سبب',
+    'with reason': 'مع سبب', 'escalate': 'تصعيد', 'approval': 'موافقة', 'own contacts': 'جهات الاتصال الخاصة', 'of': 'من', 'Shown': 'ظاهرة',
+    'Cost, margin and settlement withheld': 'التكلفة والهامش والتسوية محجوبة',
+    'Each lead goes to the agent with the most free minutes. Results are reported per ticket.': 'يذهب كل عميل إلى الوكيل صاحب أكثر دقائق متاحة. تُعرض النتائج لكل تذكرة.',
+    'Import from People on MDM, with the role Onboarding agent': 'استيراد من الأشخاص على MDM، بدور وكيل تهيئة',
+  });
+  add(window.I18N_AR_TEMPLATES, {
+    'Sun–Thu {n}:{n}–{n}:{n} · Africa/Tripoli': 'الأحد–الخميس {n}:{n}–{n}:{n} · Africa/Tripoli',
+    'Assign {n} held lead(s) over capacity': 'إسناد {n} عميل محتجز فوق السعة',
+    'At most {n} per run: the {n} that have waited longest go now, press again for the other {n}. Each lead goes to the agent with the most free minutes. Results are reported per ticket.':
+      'بحد أقصى {n} في كل عملية: يذهب الآن {n} انتظروا أطول مدة، اضغط مرة أخرى للـ {n} الباقين. يذهب كل عميل إلى الوكيل صاحب أكثر دقائق متاحة. تُعرض النتائج لكل تذكرة.',
+  });
+})();

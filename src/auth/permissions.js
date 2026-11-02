@@ -82,6 +82,21 @@ const AM = {
 
 export const MATRIX = Object.freeze({ ...OA, ...AM });
 
+// OA Appendix A, row by row in its own order and wording — what the Configuration screen's
+// "Roles & permissions" tab lists for a role.
+export const OA_APPENDIX_A = Object.freeze([
+  ['View own tickets', 'onboarding.view_own'], ['View all onboarding tickets', 'onboarding.view_all'],
+  ['Public reply to contact', 'onboarding.reply'], ['Internal note', 'onboarding.note'], ['Edit ticket properties', 'onboarding.edit'],
+  ['Run a macro', 'onboarding.macro'], ['Send approved template', 'onboarding.template'], ['Reassign / transfer', 'onboarding.reassign'],
+  ['Take over from monitor', 'onboarding.take_over'], ['Assign over capacity', 'onboarding.assign_over_capacity'],
+  ['Book walkthrough', 'onboarding.book_walkthrough'], ['Activate seller (accept)', 'onboarding.activate'], ['Reject seller', 'onboarding.reject'],
+  ['Reopen cold / junk', 'onboarding.reopen'], ['Bulk internal changes', 'onboarding.bulk_internal'], ['Bulk outbound messaging', 'onboarding.bulk_outbound'],
+  ['Block contact', 'contact.block'], ['Listen to call recordings', 'call.listen'], ['See cost / fee / margin', 'finance.view_cost'],
+  ['Author team macro / template', 'macro.author_team'], ['Author personal macro / view', 'macro.author_personal'],
+  ['Manage automation / cadence', 'automation.manage'], ['Manage roles & permissions', 'roles.manage'], ['View reports', 'reports.view'],
+  ['Export data', 'data.export'], ['View audit log', 'audit.view'],
+].map(([label, key]) => Object.freeze({ label, key })));
+
 /** The grant a role holds for a permission (false if unknown). */
 export function grant(role, permission) {
   const row = MATRIX[permission];
