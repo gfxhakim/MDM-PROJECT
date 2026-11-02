@@ -346,3 +346,38 @@ model IntegrationRun {
   startedAt  DateTime  @default(now())
   finishedAt DateTime?
 }
+
+// A seller the MDM pull could not place (market outside Libya, Iraq and Lebanon, no phone,
+// rejected on the platform, stale registration, already here): kept aside with what the platform
+// says about it until an Admin decides where it goes (Integrations page → Skipped sellers).
+// One row per platform seller; the decision and its outcome stay on the row, the immutable
+// record of who decided is the EventLog entry (mdm.skipped_decided).
+model MdmSkipped {
+  id                String    @id @default(cuid())
+  mdmRef            String    @unique
+  reasonCode        String    // market | phone | rejected | duplicate | stale | other
+  reason            String
+  name              String?
+  phone             String?
+  country           String?   // the market the sync derived (2-letter), possibly outside LY/IQ/LB
+  countries         String    @default("[]") // JSON: every country code the platform lists for the seller
+  countryId         String?
+  joinStatus        String?
+  joinStatusDate    DateTime?
+  registeredAt      DateTime?
+  accountManagerRef String?
+  utm               String?
+  platform          String    @default("{}") // JSON: the platform record as last read
+  seenCount         Int       @default(1)
+  firstSeenAt       DateTime  @default(now())
+  lastSeenAt        DateTime  @default(now())
+  runId             String?
+  decision          String?   // null = waiting | placed | lead | left_out | imported
+  decidedById       String?
+  decidedAt         DateTime?
+  decisionNote      String?
+  outcome           String    @default("{}") // JSON: what the decision produced (seller, contact, ticket, ownership)
+  figuresAt         DateTime? // placed sellers: when their platform figures were first read
+
+  @@index([decision, reasonCode])
+}

@@ -12,6 +12,7 @@ import { findContact } from '../core/contacts.js';
 import { prisma } from '../db.js';
 import { handleWebhook, verifySignature, whatsappConfig, whatsappStatus } from '../integrations/whatsapp.js';
 import { handleMdmEvent, mdmConfig, mdmStatus, startSync } from '../integrations/mdm.js';
+import { decideSkipped, listSkipped } from '../integrations/mdm-skipped.js';
 import { dial, handleYeastarEvent, yeastarConfig, yeastarStatus } from '../integrations/yeastar.js';
 import { runImport } from '../integrations/importer.js';
 import { OPTIONAL, optionalOn } from '../integrations/optional.js';
@@ -78,6 +79,23 @@ integrationsRouter.post('/mdm/sync', requirePermission('integrations.manage'), a
 
 integrationsRouter.post('/mdm/push', requirePermission('integrations.manage'), ah(async (_req, res) => {
   res.json(await pushPending());
+}));
+
+// Sellers the pull could not place, kept aside for a decision. ?decision=waiting|placed|lead|left_out|imported|all
+integrationsRouter.get('/mdm/skipped', requirePermission('integrations.manage'), ah(async (req, res) => {
+  res.json(await listSkipped({ decision: req.query.decision, reason: req.query.reason, q: req.query.q }));
+}));
+
+// { ids, action: place|lead|leave_out|reopen, market?, managerId?, note?, phone? } — each row reported on
+// its own, one audit entry for the run. A placed seller's figures come with the next sync, which is
+// started at once when the platform is connected and no sync is running.
+integrationsRouter.post('/mdm/skipped/decide', requirePermission('integrations.manage'), ah(async (req, res) => {
+  const result = await decideSkipped(req.user, req.body ?? {});
+  if (result.action === 'place' && result.done && mdmConfig().apiKey) {
+    // answers as soon as the run is recorded; a sync already running (409) reads the placed sellers itself
+    result.sync = await startSync({ actorId: req.user.id }).then((s) => ({ started: true, runId: s.runId }), (e) => ({ started: false, reason: e.message }));
+  }
+  res.json(result);
 }));
 
 // Zoho CSV/XLSX import. dryRun defaults to true: the first call returns the per-row plan.

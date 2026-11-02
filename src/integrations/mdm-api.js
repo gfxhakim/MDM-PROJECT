@@ -88,16 +88,19 @@ const MARKET_CODES = ['LY', 'IQ', 'LB'];
  * `countryId` is that market's id (wallets and services are per country on the platform).
  */
 export function sellerToRow(s) {
-  const home = s.country?.code ? { id: s.country.id ?? null, code: marketCode(s.country.code) } : null;
-  const selling = (s.countries ?? []).filter((c) => c?.code).map((c) => ({ id: c.id ?? null, code: marketCode(c.code) }));
+  const home = s.country?.code ? { id: s.country.id ?? null, code: marketCode(s.country.code), name: s.country.name ?? null, home: true } : null;
+  const selling = (s.countries ?? []).filter((c) => c?.code).map((c) => ({ id: c.id ?? null, code: marketCode(c.code), name: c.name ?? null, home: false }));
   const market = [home, ...selling].find((c) => c && MARKET_CODES.includes(c.code)) ?? home ?? selling[0] ?? null;
+  const places = []; // every country the platform names for the seller, home first, each once
+  for (const p of [home, ...selling]) if (p && !places.some((q) => q.code === p.code)) places.push(p);
   return {
     mdmRef: s.trackingId,
     phone: s.phones?.[0] ?? null,
     name: [s.firstName, s.lastName].filter(Boolean).join(' ').trim() || null,
     country: market?.code ?? null,
     countryId: market?.id ?? null,
-    countries: [...new Set([home, ...selling].filter(Boolean).map((c) => c.code))],
+    countries: places.map((c) => c.code),
+    places,
     joinStatus: s.joinStatus ?? null,
     joinStatusDate: dateOf(s.joinStatusDate),
     createdAt: dateOf(s.createdAt),

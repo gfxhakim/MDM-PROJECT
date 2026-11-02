@@ -51,7 +51,7 @@ before(async () => {
   app = await startApp(createApp);
 });
 beforeEach(async () => {
-  for (const m of ['notification', 'eventLog', 'message', 'ticket', 'seller', 'conversation', 'contact', 'integrationRun']) await prisma[m].deleteMany();
+  for (const m of ['notification', 'eventLog', 'message', 'ticket', 'seller', 'conversation', 'contact', 'integrationRun', 'mdmSkipped']) await prisma[m].deleteMany();
 });
 after(async () => { app.close(); await prisma.$disconnect(); });
 
@@ -240,6 +240,107 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   process.env.MDM_API_KEY = 'k';
   try { s = await syncSellers({ fetchImpl: quiet.fetchImpl }); } finally { delete process.env.MDM_API_KEY; }
   assert.equal(s.full, false); assert.equal(s.fetched, 0); assert.equal(s.updated, 0);
+});
+
+test('skipped sellers are kept aside with the platform data; the Admin places them, opens leads or leaves them out, each reported on its own, one audit entry per run', async () => {
+  const recent = new Date(Date.now() - 3 * 86_400_000).toISOString();
+  const mdm = fakeMdm({
+    sellers: [
+      mdmSeller('SK-FR', '+33612345678', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', country: { id: 'c-fr', name: 'France', code: 'FRA' }, countries: [{ id: 'c-ma', name: 'Morocco', code: 'MAR' }] }),
+      mdmSeller('SK-EG', '+201001234567', { joinStatus: 'accepted', joinStatusDate: recent, country: { id: 'c-eg', name: 'Egypt', code: 'EGY' }, countries: [] }),
+      mdmSeller('SK-OLD', '+218915550133', { createdAt: '2024-01-01T00:00:00Z' }),
+      mdmSeller('SK-REJ', '+218915550134', { joinStatus: 'rejected', createdAt: recent }),
+      mdmSeller('SK-NOPHONE', '', { joinStatus: 'accepted', phones: [], joinStatusDate: '2025-01-10T00:00:00Z' }),
+      mdmSeller('SK-TN', '+21698123456', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', country: { id: 'c-tn', name: 'Tunisia', code: 'TUN' }, countries: [] }),
+    ],
+    orders: { 'SK-FR': 6, 'SK-EG': 2 },
+  });
+  const run = (f) => { process.env.MDM_API_KEY = 'k'; return syncSellers({ full: true, actorId: U.admin.id, fetchImpl: f }).finally(() => { delete process.env.MDM_API_KEY; }); };
+  let s = await run(mdm.fetchImpl);
+  assert.equal(s.skippedCount, 6);
+  const admin = await tok('admin');
+  let list = (await app.call('GET', '/api/integrations/mdm/skipped', { token: admin })).body;
+  assert.equal(list.items.length, 6); assert.equal(list.counts.waiting, 6);
+  assert.deepEqual(list.counts.byReason, { market: 3, stale: 1, rejected: 1, phone: 1 });
+  const fr = list.items.find((i) => i.mdmRef === 'SK-FR');
+  assert.equal(fr.reasonCode, 'market'); assert.equal(fr.phone, '+33612345678'); assert.deepEqual(fr.countries, ['FRA', 'MAR']);
+  assert.equal(fr.places[0].name, 'France'); assert.equal(fr.joinStatus, 'accepted'); assert.equal(fr.suggestedMarket, null); assert.equal(fr.blocked, null);
+  assert.match(fr.reason, /^Market FRA is not Libya/);
+  assert.ok(list.managers.some((m) => m.name === 'yassine' && m.bookSize === 0 && m.markets.includes('LY'))); assert.equal(list.maxBook, 50);
+  // the same run again: no second row, seen twice
+  await run(mdm.fetchImpl);
+  assert.equal(await prisma.mdmSkipped.count(), 6);
+  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-FR' } })).seenCount, 2);
+  // Admin only
+  assert.equal((await app.call('GET', '/api/integrations/mdm/skipped', { token: await tok('manager') })).status, 403);
+  assert.equal((await app.call('POST', '/api/integrations/mdm/skipped/decide', { token: await tok('yassine'), body: { ids: [fr.id], action: 'place', market: 'LY' } })).status, 403);
+  const ids = (refs) => refs.map((r) => list.items.find((i) => i.mdmRef === r).id);
+  const decide = (body) => app.call('POST', '/api/integrations/mdm/skipped/decide', { token: admin, body });
+  // a bulk run needs a written note; a named manager who does not cover the market is refused per seller
+  let r = await decide({ ids: ids(['SK-FR', 'SK-EG']), action: 'place', market: 'LY' });
+  assert.equal(r.status, 400); assert.match(r.body.error.message, /written note/);
+  r = await decide({ ids: ids(['SK-FR', 'SK-EG']), action: 'place', market: 'LY', managerId: U.omar.id, note: 'sells into Libya' });
+  assert.equal(r.status, 200); assert.deepEqual([r.body.done, r.body.failed], [0, 2]); assert.match(r.body.results[0].reason, /^omar does not cover Libya/);
+  assert.equal(await prisma.seller.count(), 0, 'a refused item writes nothing');
+  // placed in Libya: a contact, a conversation and a seller record; owner by AM 3.2, or r1 when accepted in the last 14 days
+  r = await decide({ ids: ids(['SK-FR', 'SK-EG']), action: 'place', market: 'LY', note: 'sells into Libya' });
+  assert.equal(r.body.done, 2); assert.equal(r.body.sync, undefined, 'no platform key during the call: no sync started');
+  const frSeller = await prisma.seller.findUnique({ where: { mdmRef: 'SK-FR' }, include: { contact: true } });
+  assert.equal(frSeller.market, 'LY'); assert.equal(frSeller.contact.country, 'LY'); assert.equal(frSeller.contact.mdmRef, 'SK-FR'); assert.equal(frSeller.lastSyncedAt, null);
+  assert.ok([U.yassine.id, U.rania.id].includes(frSeller.assignedAccountManagerId), 'same market, smallest book');
+  assert.ok(await prisma.conversation.findFirst({ where: { contactId: frSeller.contactId } }));
+  assert.match(r.body.results[0].outcome, /^Libya book · Assigned to (yassine|rania) \(same market, smallest book\)\.$/);
+  const egSeller = await prisma.seller.findUnique({ where: { mdmRef: 'SK-EG' } });
+  assert.ok(await prisma.ticket.findFirst({ where: { sellerId: egSeller.id, type: 'am_task' } }), 'accepted 3 days ago: the handover opens the welcome task');
+  const placed = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-FR' } });
+  assert.equal(placed.decision, 'placed'); assert.equal(placed.decidedById, U.admin.id); assert.equal(placed.figuresAt, null);
+  assert.equal(JSON.parse(placed.outcome).sellerId, frSeller.id);
+  // a decided seller is refused per item; the others in the run still go through (capture r1 opens the lead's ticket)
+  r = await decide({ ids: ids(['SK-FR', 'SK-OLD']), action: 'lead', market: 'LY', note: 'retry' });
+  assert.deepEqual([r.body.done, r.body.failed], [1, 1]); assert.match(r.body.results[0].reason, /^Already placed as a seller on \d{4}-\d{2}-\d{2}\./);
+  const old = await prisma.contact.findUnique({ where: { phone: '+218915550133' } });
+  assert.equal(old.contactType, 'merchant'); assert.equal(old.mdmRef, 'SK-OLD'); assert.equal(old.country, 'LY');
+  assert.ok(await prisma.ticket.findFirst({ where: { contactId: old.id, type: 'onboarding_task' } }));
+  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-OLD' } })).decision, 'lead');
+  // leaving out needs a reason; a left-out seller can be put back
+  assert.equal((await decide({ ids: ids(['SK-REJ']), action: 'leave_out' })).status, 400);
+  assert.equal((await decide({ ids: ids(['SK-REJ']), action: 'leave_out', note: 'MDM rejected it' })).body.done, 1);
+  const left = (await app.call('GET', '/api/integrations/mdm/skipped?decision=left_out', { token: admin })).body;
+  assert.equal(left.items.length, 1); assert.equal(left.items[0].mdmRef, 'SK-REJ'); assert.equal(left.items[0].decidedBy, 'admin'); assert.equal(left.items[0].decisionNote, 'MDM rejected it');
+  assert.equal((await decide({ ids: ids(['SK-REJ']), action: 'reopen' })).body.done, 1);
+  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-REJ' } })).decision, null);
+  // no phone on the platform: refused until the Admin types one (one seller at a time)
+  r = await decide({ ids: ids(['SK-NOPHONE']), action: 'place', market: 'IQ' });
+  assert.equal(r.body.done, 0); assert.match(r.body.results[0].reason, /^No valid phone number on the platform/);
+  assert.equal((await decide({ ids: ids(['SK-NOPHONE', 'SK-TN']), action: 'place', market: 'IQ', note: 'x', phone: '+9647701234567' })).status, 400);
+  r = await decide({ ids: ids(['SK-NOPHONE']), action: 'place', market: 'IQ', phone: '+964 770 123 4567' });
+  assert.equal(r.body.done, 1); assert.match(r.body.results[0].outcome, /^Iraq book · Assigned to omar/);
+  assert.equal((await prisma.seller.findUnique({ where: { mdmRef: 'SK-NOPHONE' }, include: { contact: true } })).contact.phone, '+9647701234567');
+  // filters and search
+  assert.equal((await app.call('GET', '/api/integrations/mdm/skipped?reason=market', { token: admin })).body.items.map((i) => i.mdmRef).join(), 'SK-TN');
+  assert.equal((await app.call('GET', '/api/integrations/mdm/skipped?decision=all&q=SK-N', { token: admin })).body.items.length, 1);
+  // one audit entry per run that got past validation, with the full list and each item's result
+  const audits = (await prisma.eventLog.findMany({ where: { action: 'mdm.skipped_decided' } })).map((e) => JSON.parse(e.after));
+  assert.equal(audits.length, 7);
+  const retry = audits.find((a) => a.action === 'lead');
+  assert.deepEqual(retry.items.map((i) => [i.mdmRef, i.ok]), [['SK-FR', false], ['SK-OLD', true]]); assert.equal(retry.requested, 2);
+  // the next sync reads the placed sellers' figures; a seller we opened as a lead comes back as "already here" and keeps its decision
+  s = await run(mdm.fetchImpl);
+  const frAfter = await prisma.seller.findUnique({ where: { mdmRef: 'SK-FR' } });
+  assert.equal(frAfter.totalOrders, 6); assert.equal(frAfter.deliveryRate, 80); assert.ok(frAfter.lastSyncedAt);
+  assert.ok((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-FR' } })).figuresAt);
+  const oldRow = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-OLD' } });
+  assert.deepEqual([oldRow.decision, oldRow.reasonCode, oldRow.seenCount], ['lead', 'duplicate', 3]);
+  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-REJ' } })).decision, null);
+  // the platform fixes a seller's country: the sync brings it in by the normal rules and closes its row
+  const fixed = fakeMdm({ sellers: [mdmSeller('SK-TN', '+21698123456', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', country: { id: 'c-tn', name: 'Tunisia', code: 'TUN' }, countries: [{ id: 'c-ly', name: 'Libya', code: 'LBY' }] })] });
+  s = await run(fixed.fetchImpl);
+  assert.equal(s.sellersCreated, 1);
+  const tn = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-TN' } });
+  assert.equal(tn.decision, 'imported'); assert.equal(JSON.parse(tn.outcome).action, 'seller_created');
+  const status = (await app.call('GET', '/api/integrations/status', { token: admin })).body;
+  assert.equal(status.mdm.skippedWaiting, 1, 'only the rejected seller, put back on the list, is still waiting');
+  assert.match(await (await fetch(`${app.base}/integrations`)).text(), /Skipped sellers/);
 });
 
 test("MDM reporting rows → rates: counts summed over the seller's markets, no orders → no rates, impossible counts → a problem", () => {

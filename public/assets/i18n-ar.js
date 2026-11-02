@@ -1720,3 +1720,80 @@ window.I18N_AR_PATTERNS = window.I18N_AR_PATTERNS.concat([
   [/^(\d+)h (\d+)m free reply$/, (_, h, m) => `${h}س ${m}د للرد المجاني`],
   [/^registered (yesterday|today)$/, (_, d) => `سُجّل ${d === 'today' ? 'اليوم' : 'أمس'}`],
 ]);
+// Integrations page — skipped sellers (kept aside by the MDM import, decided by the Admin).
+Object.assign(window.I18N_AR, {
+  'Skipped sellers': 'بائعون تم تخطيهم',
+  "Sellers the MDM import could not place, kept here with what the platform says about them. Choose where each one goes: place it in an account manager's book (same market, smallest book, unless you name a manager), open it as an onboarding lead, or leave it out. A placed seller's figures are read from MDM on the next sync. A seller that is already here cannot be placed twice; a lead is activated in the onboarding console.":
+    'بائعون لم يستطع استيراد MDM وضعهم، محفوظون هنا مع ما تقوله المنصة عنهم. اختر مكان كل واحد: ضعه في دفتر مدير حسابات (نفس السوق، أصغر دفتر، ما لم تسمِّ مديرًا)، أو افتحه كعميل محتمل في الإعداد، أو اتركه خارجًا. أرقام البائع الموضوع تُقرأ من MDM في المزامنة التالية. البائع الموجود هنا أصلًا لا يوضع مرتين؛ والعميل المحتمل يُفعَّل من لوحة الإعداد.',
+  'Waiting': 'بالانتظار', 'Placed': 'تم وضعهم', 'Opened as leads': 'فُتحوا كعملاء محتملين', 'Left out': 'متروكون', 'Imported later': 'استُوردوا لاحقًا',
+  'All reasons': 'كل الأسباب',
+  'Market outside Libya, Iraq and Lebanon': 'سوق خارج ليبيا والعراق ولبنان', 'No valid phone number': 'لا يوجد رقم هاتف صالح', 'Rejected on the platform': 'مرفوض على المنصة',
+  'Already here': 'موجود هنا أصلًا', 'Old registration, never accepted': 'تسجيل قديم لم يُقبل', 'Other': 'أخرى',
+  'Search name, phone or MDM id': 'ابحث بالاسم أو الهاتف أو معرّف MDM',
+  'From the platform': 'من المنصة', 'By the rule — same market, smallest book': 'حسب القاعدة — نفس السوق، أصغر دفتر',
+  'Note (needed for several sellers, or to leave one out)': 'ملاحظة (مطلوبة لعدة بائعين، أو لترك بائع خارجًا)',
+  'Place as seller': 'وضع كبائع', 'Open as lead': 'فتح كعميل محتمل', 'Leave out': 'ترك خارجًا', 'Put back on the list': 'إعادة إلى القائمة',
+  'Select at least one seller': 'اختر بائعًا واحدًا على الأقل', 'Select all on this page': 'تحديد الكل في هذه الصفحة',
+  'MDM id': 'معرّف MDM', 'Phone': 'الهاتف', 'Country': 'البلد', 'MDM status': 'حالة MDM', 'Why skipped': 'سبب التخطي', 'Decision': 'القرار', 'Seen': 'شوهد',
+  'sells in': 'يبيع في', 'last seen': 'آخر ظهور', 'by': 'بواسطة',
+  'Platform also lists': 'المنصة تذكر أيضًا', '— used unless you choose a market.': '— يُستخدم ما لم تختر سوقًا.',
+  'Placed as a seller': 'وُضع كبائع', 'Opened as a lead': 'فُتح كعميل محتمل', 'Imported by the sync': 'استوردته المزامنة',
+  'Figures read from MDM.': 'قُرئت الأرقام من MDM.', 'Figures come with the next sync.': 'تأتي الأرقام مع المزامنة التالية.',
+  'Onboarding lead, assigned.': 'عميل محتمل في الإعداد، تم إسناده.', 'Onboarding lead — waiting in the holding queue.': 'عميل محتمل في الإعداد — في طابور الانتظار.',
+  'Contact created, no onboarding ticket.': 'أُنشئت جهة الاتصال دون تذكرة إعداد.',
+  'Came in as an onboarding lead.': 'دخل كعميل محتمل في الإعداد.', 'Came in as a seller.': 'دخل كبائع.', 'Came in with the sync.': 'دخل مع المزامنة.',
+  'Nothing waiting — every seller the import read is placed, a lead, or decided.': 'لا شيء بالانتظار — كل بائع قرأه الاستيراد إما وُضع أو صار عميلًا محتملًا أو تقرر أمره.',
+  'Nothing here yet.': 'لا شيء هنا بعد.', 'No skipped sellers waiting.': 'لا بائعين متخطَّين بالانتظار.',
+  'One audit entry records this run.': 'قيد تدقيق واحد يسجّل هذه العملية.', 'A sync has started to read their figures.': 'بدأت مزامنة لقراءة أرقامهم.',
+  'Their figures come with the next sync.': 'تأتي أرقامهم مع المزامنة التالية.', 'Not done:': 'لم يتم:',
+  'Place them as sellers?': 'وضعهم كبائعين؟', 'Open them as onboarding leads?': 'فتحهم كعملاء محتملين في الإعداد؟', 'Leave them out?': 'تركهم خارجًا؟', 'Put them back on the list?': 'إعادتهم إلى القائمة؟',
+  'Market:': 'السوق:', 'Account manager:': 'مدير الحسابات:', 'the market the platform lists for each seller': 'السوق التي تذكرها المنصة لكل بائع',
+  'by the rule — same market, smallest book': 'حسب القاعدة — نفس السوق، أصغر دفتر',
+  'Each gets a contact, a conversation and a seller record here. Their figures are read from MDM on the next sync. MDM is not changed, except that the assigned account manager is recorded there when "Our work recorded on MDM" is on.':
+    'كل واحد يحصل هنا على جهة اتصال ومحادثة وسجل بائع. تُقرأ أرقامهم من MDM في المزامنة التالية. لا يتغير شيء في MDM، باستثناء تسجيل مدير الحسابات المُسنَد هناك عندما يكون «تسجيل عملنا على MDM» مفعّلًا.',
+  'Each gets a contact, a conversation and an onboarding ticket, assigned by the capture rule.': 'كل واحد يحصل على جهة اتصال ومحادثة وتذكرة إعداد، تُسنَد بقاعدة الالتقاط.',
+  'They stay listed under "Left out" and can be put back any time.': 'يبقون مدرجين تحت «متروكون» ويمكن إعادتهم في أي وقت.',
+  'This seller has no valid phone on MDM. Type the number to use, in international format (+218…):': 'هذا البائع ليس له رقم هاتف صالح على MDM. اكتب الرقم المطلوب بالصيغة الدولية (+218…):',
+});
+Object.assign(window.I18N_AR_TEMPLATES, {
+  '{n} waiting': '{n} بالانتظار',
+  '{n} sellers selected.': 'تم اختيار {n} بائعًا.',
+  '{n} done, {n} not done.': 'تم {n}، لم يتم {n}.',
+  '{n} skipped sellers waiting for your decision': '{n} بائعًا متخطًّى بانتظار قرارك',
+  'Market outside Libya, Iraq and Lebanon ({n})': 'سوق خارج ليبيا والعراق ولبنان ({n})',
+  'No valid phone number ({n})': 'لا يوجد رقم هاتف صالح ({n})',
+  'Rejected on the platform ({n})': 'مرفوض على المنصة ({n})',
+  'Already here ({n})': 'موجود هنا أصلًا ({n})',
+  'Old registration, never accepted ({n})': 'تسجيل قديم لم يُقبل ({n})',
+  'Other ({n})': 'أخرى ({n})',
+});
+// The sync's own wording on the skipped list (reasons, outcomes, refusals).
+Object.assign(window.I18N_AR, {
+  'No valid phone number.': 'لا يوجد رقم هاتف صالح.',
+  'Already an onboarding lead here — activate it in the onboarding console so the handoff record is complete.': 'موجود هنا أصلًا كعميل محتمل في الإعداد — فعِّله من لوحة الإعداد حتى يكتمل سجل التسليم.',
+  'Already a contact here — linked to its platform id.': 'موجود هنا أصلًا كجهة اتصال — رُبط بمعرّفه على المنصة.',
+  'An activated seller needs its MDM seller id (mdmRef).': 'البائع المفعَّل يحتاج معرّف البائع على MDM.',
+  'No valid phone number on the platform — type one.': 'لا يوجد رقم هاتف صالح على المنصة — اكتب رقمًا.',
+  'Choose a market (Libya, Iraq or Lebanon) for this seller.': 'اختر سوقًا (ليبيا أو العراق أو لبنان) لهذا البائع.',
+  'Already a seller here with this platform id.': 'موجود هنا أصلًا كبائع بهذا المعرّف.',
+  'Not in the list any more.': 'لم يعد في القائمة.', 'Already waiting.': 'بالانتظار أصلًا.', 'Back on the list.': 'عاد إلى القائمة.', 'Left out.': 'تُرك خارجًا.',
+});
+Object.assign(window.I18N_AR_TEMPLATES, {
+  'Registered {n}-{n}-{n}, more than {n} days ago and never accepted — not opened as a lead.': 'سُجّل في {n}-{n}-{n}، منذ أكثر من {n} يومًا ولم يُقبل — لم يُفتح كعميل محتمل.',
+  'Already placed as a seller on {n}-{n}-{n}.': 'وُضع كبائع أصلًا في {n}-{n}-{n}.',
+  'Already opened as a lead on {n}-{n}-{n}.': 'فُتح كعميل محتمل أصلًا في {n}-{n}-{n}.',
+  'Already left out on {n}-{n}-{n}.': 'تُرك خارجًا أصلًا في {n}-{n}-{n}.',
+  'Already imported by the sync on {n}-{n}-{n}.': 'استوردته المزامنة أصلًا في {n}-{n}-{n}.',
+});
+window.I18N_AR_PATTERNS = window.I18N_AR_PATTERNS.concat([
+  [/^Market (\S+) is not Libya, Iraq or Lebanon\.$/, (_, c) => `السوق ${c} ليست ليبيا أو العراق أو لبنان.`],
+  [/^Market (\S+) is not Libya, Iraq or Lebanon \(the platform also lists (.+) for this seller\)\.$/, (_, c, o) => `السوق ${c} ليست ليبيا أو العراق أو لبنان (المنصة تذكر أيضًا ${o} لهذا البائع).`],
+  [/^Rejected on the platform \((.+)\)\.$/, (_, st) => `مرفوض على المنصة (${st}).`],
+  [/^Assigned to (.+) \(same market, smallest book\)\.$/, (_, n) => `أُسند إلى ${n} (نفس السوق، أصغر دفتر).`],
+  [/^Assigned by the handover rule to (.+); welcome call task opened\.$/, (_, n) => `أسندته قاعدة التسليم إلى ${n}؛ فُتحت مهمة مكالمة الترحيب.`],
+  [/^Placed with (.+) by (.+)\.$/, (_, m, u) => `وُضع مع ${m} بواسطة ${u}.`],
+  [/^Not assigned: (.+)$/, (_, r) => `لم يُسنَد: ${r}`],
+  [/^(.+) does not cover (Libya|Iraq|Lebanon)\.$/, (_, n, m) => `${n} لا يغطي ${{ Libya: 'ليبيا', Iraq: 'العراق', Lebanon: 'لبنان' }[m]}.`],
+  [/^(.+) is at the book ceiling \((\d+)\)\.$/, (_, n, c) => `${n} بلغ سقف الدفتر (${c}).`],
+  [/^Already here as (.+) \((\+\d+)\)(, a seller\.| — a lead is activated in the onboarding console\.)$/, (_, n, p, tail) => `موجود هنا أصلًا باسم ${n} (${p})${tail.startsWith(',') ? '، وهو بائع.' : ' — العميل المحتمل يُفعَّل من لوحة الإعداد.'}`],
+]);
