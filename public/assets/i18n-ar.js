@@ -1973,3 +1973,44 @@ Object.assign(window.I18N_AR, {
       'بحد أقصى {n} في كل عملية: يذهب الآن {n} انتظروا أطول مدة، اضغط مرة أخرى للـ {n} الباقين. يذهب كل عميل إلى الوكيل صاحب أكثر دقائق متاحة. تُعرض النتائج لكل تذكرة.',
   });
 })();
+
+// The follow-up cadence cards, their messages and the lead stage (OA 5.1–5.3, 7.3).
+(function () {
+  const add = (target, entries) => { for (const [k, v] of Object.entries(entries)) if (!(k in target)) target[k] = v; };
+  add(window.I18N_AR, {
+    'No-answer cadence': 'إيقاع عدم الرد', 'Went-quiet cadence': 'إيقاع ما بعد الصمت',
+    'Status stays': 'تبقى الحالة',
+    'and the counter rises daily. Only a reply changes the status, and only by hand.': 'ويرتفع العدّاد يومياً. لا يغيّر الحالة إلا ردّ التاجر، وباليد فقط.',
+    'Every follow-up here lands outside the 24-hour window, so each one is a billable template send. Ask one multiple-choice question —':
+      'كل متابعة هنا تقع خارج نافذة الـ24 ساعة، لذا كل واحدة إرسال قالب مدفوع. اطرح سؤالاً واحداً متعدد الخيارات —',
+    '"pricing, trust, or timing?"': '"السعر، الثقة، أم التوقيت؟"',
+    'Three follow-ups, no reply — moved to Cold Lead.': 'ثلاث متابعات دون ردّ — نُقل إلى غير مهتم.',
+    'Cadence exhausted.': 'انتهى الإيقاع.',
+    'Marked Junk Lead — excluded from your metrics': 'صُنّف عميلاً غير جاد — مستبعد من مؤشراتك',
+    'Set to Qualified — book the walkthrough next': 'أصبح مؤهَّلاً — احجز الجولة التعريفية بعد ذلك',
+    'Set to Pre-qualified — book the walkthrough next': 'أصبح مؤهَّلاً مبدئياً — احجز الجولة التعريفية بعد ذلك',
+  });
+  add(window.I18N_AR_TEMPLATES, {
+    '{n} of {n} · one a day': '{n} من {n} · واحدة يومياً',
+    '{n} of {n} · one every {n} days': '{n} من {n} · واحدة كل {n} أيام',
+    '{n} of {n} · every {n} days': '{n} من {n} · كل {n} أيام',
+    'Attempt {n}': 'المحاولة {n}', 'Follow-up {n}': 'المتابعة {n}', 'after {n}': 'بعد {n}',
+    'Attempt {n} of {n} due today.': 'المحاولة {n} من {n} مستحقة اليوم.',
+    'Attempt {n} of {n} due tomorrow.': 'المحاولة {n} من {n} مستحقة غداً.',
+    'Attempt {n} of {n} due yesterday.': 'المحاولة {n} من {n} كانت مستحقة أمس.',
+    'Attempt {n} of {n} due in {n} days.': 'المحاولة {n} من {n} مستحقة خلال {n} أيام.',
+    'Attempt {n} of {n} due {n} days ago.': 'المحاولة {n} من {n} كانت مستحقة قبل {n} أيام.',
+    'and the counter rises every {n} days. Only a reply changes the status, and only by hand.': 'ويرتفع العدّاد كل {n} أيام. لا يغيّر الحالة إلا ردّ التاجر، وباليد فقط.',
+    'All {n} attempts used — moved to Cold Lead automatically.': 'استُنفدت المحاولات الـ{n} — نُقل إلى غير مهتم تلقائياً.',
+    '{n} follow-ups, no reply — moved to Cold Lead.': '{n} متابعات دون ردّ — نُقل إلى غير مهتم.',
+    'Cadence exhausted. One win-back template is scheduled for day {n}, then the ticket closes.': 'انتهى الإيقاع. قالب استعادة واحد مجدول في اليوم {n}، ثم تُغلق التذكرة.',
+    'Follow-up {n} of {n} was not sent.': 'المتابعة {n} من {n} لم تُرسَل.',
+    'Template ceiling for this contact reached ({n} of {n}).': 'بلغ هذا التاجر حدّ القوالب ({n} من {n}).',
+    'Monthly onboarding template budget spent ({n} of {n}).': 'نفدت ميزانية قوالب التهيئة الشهرية ({n} من {n}).',
+    'Attempt {n} logged. Attempt {n} is due tomorrow.': 'سُجّلت المحاولة {n}. المحاولة {n} مستحقة غداً.',
+    'Attempt {n} logged. Attempt {n} is due in {n} days.': 'سُجّلت المحاولة {n}. المحاولة {n} مستحقة خلال {n} أيام.',
+  });
+  window.I18N_AR_PATTERNS = (window.I18N_AR_PATTERNS || []).concat([
+    [/^(.+) moved to Cold Lead after (\d+) attempts$/, '$1 نُقل إلى غير مهتم بعد $2 محاولات'],
+  ]);
+})();

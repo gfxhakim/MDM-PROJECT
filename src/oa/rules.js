@@ -29,6 +29,13 @@ async function withConversations(db, where) {
 }
 
 const awaitingReply = (conv) => !!conv?.lastInboundAt && !!conv.lastOutboundAt && conv.lastOutboundAt > conv.lastInboundAt;
+// The went-quiet cadence runs when the merchant replied once and then stopped (5.1), or from the
+// Resource Hub send, which starts it with no reply yet (7.3: "followup_no = 0 · due_date = now +
+// quiet_gap → the went-quiet cadence begins"). A booked walkthrough takes the lead off the
+// self-serve path (1.5: "deliver the 20-minute call, OR run the went-quiet cadence").
+const quietRunning = (t, conv) => !t.walkthroughAt
+  && (awaitingReply(conv) || (!!t.nextFollowupAt && !conv?.lastInboundAt && !!conv?.lastOutboundAt));
+const sinceInbound = (conv, now) => (conv?.lastInboundAt ? now - conv.lastInboundAt : Infinity);
 
 /**
  * Run every enabled onboarding rule once.
@@ -45,22 +52,24 @@ export async function runOnboardingSweep({ db = prisma, config, now = new Date()
   if (on('r4')) {
     for (const { t, conv } of await withConversations(db, { status: 'failed_to_contact', attemptNo: { gte: c['oa.no_answer_max'] } })) {
       if (conv?.lastInboundAt && now - conv.lastInboundAt <= 24 * HOUR) continue;
+      // 5.2: log reason "N daily attempts, no answer — cadence cutoff"
       await changeTicket(db, t, { status: 'cold_lead', dueAt: null, nextAttemptAt: null, closedAt: now, tags: withTag(t, 'oa_cold_no_answer') },
-        { action: 'ticket.status_changed', reason: `r4 — ${t.attemptNo} attempts, no answer — cadence cutoff` });
+        { action: 'ticket.status_changed', reason: `r4 — ${t.attemptNo} daily attempts, no answer — cadence cutoff` });
       if (conv) await db.message.create({ data: { conversationId: conv.id, direction: 'internal', kind: 'system', body: `Moved to Cold Lead by rule r4: ${t.attemptNo} daily attempts, no answer.` } });
-      await notify({ userId: t.assigneeId, kind: 'oa.r4.cold', title: `${t.contact.name} moved to Cold Lead`, ticketId: t.id, dedupeKey: `oa.r4:${t.id}` }, db);
+      await notify({ userId: t.assigneeId, kind: 'oa.r4.cold', title: `${t.contact.name} moved to Cold Lead`, ticketId: t.id, dedupeKey: `oa.r4:${t.id}:${now.toISOString()}` }, db);
       out.r4++;
     }
   }
 
-  // r6 — went-quiet cutoff, once the last follow-up has had its gap
+  // r6 — went-quiet cutoff (App. B r6: followup_no >= quiet_max · status in (prequalified, qualified)
+  // · time_since_last_inbound > quiet_gap). The prototype's tracker puts Cold on the day of the last follow-up.
   if (on('r6')) {
     for (const { t, conv } of await withConversations(db, { status: { in: ['prequalified', 'qualified'] }, followupNo: { gte: c['oa.quiet_max'] } })) {
-      if (!conv?.lastInboundAt || now - conv.lastInboundAt <= c['oa.quiet_gap'] * DAY) continue;
-      if (t.nextFollowupAt && t.nextFollowupAt > now) continue;
+      if (t.walkthroughAt || sinceInbound(conv, now) <= c['oa.quiet_gap'] * DAY) continue;
       await changeTicket(db, t, { status: 'cold_lead', dueAt: null, nextFollowupAt: null, closedAt: now, tags: withTag(t, 'oa_cold_went_quiet') },
         { action: 'ticket.status_changed', reason: `r6 — ${t.followupNo} follow-ups, no reply — went-quiet cutoff` });
-      await notify({ userId: t.assigneeId, kind: 'oa.r6.cold', title: `${t.contact.name} moved to Cold Lead`, ticketId: t.id, dedupeKey: `oa.r6:${t.id}` }, db);
+      if (conv) await addSystemLine(conv.id, `Moved to Cold Lead by rule r6: ${t.followupNo} follow-ups, no reply.`, db);
+      await notify({ userId: t.assigneeId, kind: 'oa.r6.cold', title: `${t.contact.name} moved to Cold Lead`, ticketId: t.id, dedupeKey: `oa.r6:${t.id}:${now.toISOString()}` }, db);
       out.r6++;
     }
   }
@@ -68,8 +77,10 @@ export async function runOnboardingSweep({ db = prisma, config, now = new Date()
   // r5 — went quiet → follow-up template, only with budget remaining (the condition is load-bearing)
   if (on('r5')) {
     for (const { t, conv } of await withConversations(db, { status: { in: ['prequalified', 'qualified'] }, followupNo: { lt: c['oa.quiet_max'] } })) {
-      if (!awaitingReply(conv)) continue;
-      const due = t.nextFollowupAt ? t.nextFollowupAt <= now : now - conv.lastOutboundAt >= c['oa.quiet_gap'] * DAY;
+      if (!quietRunning(t, conv)) continue;
+      // 5.3 WHEN: awaiting reply > quiet_gap — measured from the last message out, so an agent's reply
+      // after the merchant's message always comes first (5.6: "They must receive the agent, not the template")
+      const due = now - conv.lastOutboundAt >= c['oa.quiet_gap'] * DAY;
       if (!due || t.contact.optedOut || t.contact.blocked) continue;
       try {
         await sendTemplate(null, conv.id, 'oa_nudge_v2', [t.contact.name], { now, automated: true, ruleId: 'r5', config: c, silent: simulate }, db);
@@ -80,7 +91,7 @@ export async function runOnboardingSweep({ db = prisma, config, now = new Date()
           const n = t.followupNo + 1;
           await changeTicket(db, t, { tags: withTag(t, SUPPRESSED) }, { action: 'ticket.followup_suppressed', reason: `r5 — follow-up ${n} of ${c['oa.quiet_max']} not sent: ${err.message}` });
           await addSystemLine(conv.id, `Follow-up ${n} of ${c['oa.quiet_max']} was not sent — ${err.message}`, db);
-          await notify({ userId: t.assigneeId, kind: 'oa.r5.suppressed', title: `Follow-up not sent to ${t.contact.name}`, body: err.message, ticketId: t.id, dedupeKey: `oa.r5.suppressed:${t.id}:${n}` }, db);
+          await notify({ userId: t.assigneeId, kind: 'oa.r5.suppressed', title: `Follow-up not sent to ${t.contact.name}`, body: err.message, ticketId: t.id, dedupeKey: `oa.r5.suppressed:${t.id}:${n}:${conv.lastOutboundAt.toISOString()}` }, db);
         }
         continue;
       }
@@ -97,11 +108,16 @@ export async function runOnboardingSweep({ db = prisma, config, now = new Date()
       where: { type: 'onboarding_task', status: 'failed_to_contact', attemptNo: { lt: c['oa.no_answer_max'] }, nextAttemptAt: { lte: now } },
     });
     for (const t of due) {
+      // one reminder per scheduled attempt (a reset or a reopen schedules new ones)
       const n = await notify({
         userId: t.assigneeId, kind: 'oa.r3.attempt_due', title: `Attempt ${t.attemptNo + 1} of ${c['oa.no_answer_max']} due`,
-        ticketId: t.id, dedupeKey: `oa.r3:${t.id}:${t.attemptNo + 1}`,
+        ticketId: t.id, dedupeKey: `oa.r3:${t.id}:${t.attemptNo + 1}:${t.nextAttemptAt.toISOString()}`,
       }, db);
-      if (n) out.r3++;
+      if (n) {
+        // App. B r3 THEN: notify(assignee) · set_field(due_date, now)
+        if (!simulate && (!t.dueAt || t.dueAt > now)) await changeTicket(db, t, { dueAt: now }, { action: 'ticket.updated', reason: `r3 — attempt ${t.attemptNo + 1} of ${c['oa.no_answer_max']} due` });
+        out.r3++;
+      }
     }
   }
 

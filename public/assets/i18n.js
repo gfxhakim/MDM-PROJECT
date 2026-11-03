@@ -116,6 +116,7 @@
     html.lang-ar body { font-family: Cairo, Inter, system-ui, sans-serif; }
     html[dir="rtl"] .chev, html[dir="rtl"] .back-btn svg { transform: scaleX(-1); }
     html[dir="rtl"] .num, html[dir="rtl"] code, html[dir="rtl"] .k { unicode-bidi: plaintext; }
+    html[dir="rtl"] .cad-step:before { left: auto; right: -50%; }
   `;
   document.head.appendChild(style);
   setDocumentDir();

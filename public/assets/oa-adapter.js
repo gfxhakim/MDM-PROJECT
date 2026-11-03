@@ -5,7 +5,7 @@
 // always what the server decided — including refusals, which are shown with their reason.
 /* global API, I18N, S, CFG, TEAM, AMS, ME, RULES, AUDIT, VERSIONS, CFG_FIELDS, TEMPLATES, MACROS, CHECKS, M,
    render, toast, openModal, closeModal, lead, esc, ic, opt, fmtT, fmtHM, days, iso, oa, winState, winText, chDot, renderTpl,
-   NO_ANSWER_MAX, QUIET_MAX, QUIET_GAP */
+   NO_ANSWER_MAX, QUIET_MAX, QUIET_GAP, fmt, rel, STATUS */
 (function () {
   const COUNTRY = { LY: 'Libya', IQ: 'Iraq', LB: 'Lebanon' };
   const COLORS = ['#DC2626', '#0E7490', '#7C3AED', '#2B8A3E', '#B45309', '#2563EB'];
@@ -50,9 +50,12 @@
   }
 
   // ───────────── mapping server → prototype ─────────────
+  // "Self-serve · Hub" only once the Hub was sent (OA 7.3); a strong-lead call with no booking yet
+  // stays Contacted until the walkthrough is booked (OA 6.5).
+  const hubSent = (t) => (t.events || []).some((e) => e.action === 'ticket.hub_sent');
   function stageOf(t) {
     if (t.status === 'activated') return 'activated';
-    if (t.stage === 'walkthrough') return t.walkthroughAt ? 'booked' : 'hub';
+    if (t.stage === 'walkthrough') return t.walkthroughAt ? 'booked' : hubSent(t) ? 'hub' : 'contacted';
     if (t.stage === 'documents') return 'documents';
     return t.status === 'new' ? 'registered' : 'contacted';
   }
@@ -107,6 +110,26 @@
     return tl.sort((x, y) => new Date(y.at) - new Date(x.at));
   }
 
+  // The cadence as the ticket recorded it: when each no-answer attempt was logged, when each
+  // follow-up went out, and a follow-up the rule could not send (AC-OA-8). A reply reset (r7) or
+  // a reopen starts the counters again, so the dates start again with them.
+  function cadenceOf(t) {
+    const evs = [...(t.events || [])].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    let tries = []; let sent = []; let calls = 0; let suppressed = null;
+    for (const e of evs) {
+      const a = e.after ? JSON.parse(e.after) : {};
+      if (e.action === 'ticket.cadence_reset' || e.action === 'ticket.reopened') { tries = []; sent = []; suppressed = null; }
+      else if (e.action === 'ticket.call_logged') { calls++; if (e.reason === 'no_answer' && a.attemptNo) tries[a.attemptNo - 1] = e.createdAt; }
+      else if (e.action === 'ticket.hub_sent') { sent = []; suppressed = null; }
+      else if (e.action === 'ticket.followup_sent') { if (a.followupNo) sent[a.followupNo - 1] = e.createdAt; suppressed = null; }
+      else if (e.action === 'ticket.followup_suppressed') {
+        const m = /follow-up (\d+) of (\d+) not sent: (.*)$/.exec(e.reason || '');
+        suppressed = m ? { n: +m[1], max: +m[2], why: m[3] } : { n: (t.followupNo || 0) + 1, max: QUIET_MAX, why: e.reason || '' };
+      }
+    }
+    return { attemptDates: tries, followupDates: sent, callCount: calls, suppressed: (t.tags || []).includes('oa_followup_suppressed') ? suppressed : null };
+  }
+
   function leadOf(t, i) {
     const c = t.contact;
     const conv = t.conversation;
@@ -132,6 +155,7 @@
     };
     l.msgs = (conv?.messages || []).map((m) => msgOf(m, l));
     l.tl = timelineOf(t, l);
+    Object.assign(l, cadenceOf(t));
     return l;
   }
 
@@ -244,6 +268,63 @@
       <button class="btn btn-ghost btn-sm" onclick="API.logout()">Sign out</button>`;
   };
 
+  // ───────────── cadence cards (OA 5.1–5.3) ─────────────
+  // The prototype's two trackers, drawn from the ticket: real attempt dates, the configured
+  // numbers, and a follow-up the rule did not send shown on the lead (AC-OA-8), never silent.
+  const perGap = (g) => (g === 1 ? 'one a day' : `one every ${g} days`);
+  window.cadenceCard = function (l) {
+    const cold = l.attempts >= NO_ANSWER_MAX; const gap = CFG.noAnswerGapD;
+    return `<div class="card">
+    <div class="card-h">${ic('phone', 16)}<h3>No-answer cadence</h3><span class="sp"></span>
+      <span class="chip">${l.attempts} of ${NO_ANSWER_MAX} · ${perGap(gap)}</span></div>
+    <div class="cad">
+      ${Array.from({ length: NO_ANSWER_MAX }, (_, i) => {
+        const n = i + 1; const dn = n <= l.attempts; const now = !cold && n === l.attempts + 1; const at = (l.attemptDates || [])[i];
+        return `<div class="cad-step ${dn ? 'done' : ''} ${now ? 'now' : ''}"><span class="bub">${dn ? ic('check', 11, 3) : n}</span>
+          <div class="lb">Attempt ${n}</div><div class="dt num">${dn ? (at ? fmt(at) : '—') : now && l.nextAt ? fmt(l.nextAt) : '—'}</div></div>`;
+      }).join('')}
+      <div class="cad-step ${cold ? 'cold' : ''}"><span class="bub">${ic('snow', 11)}</span><div class="lb">Cold Lead</div><div class="dt">after ${NO_ANSWER_MAX}</div></div>
+    </div>
+    ${cold ? `<div class="banner bn-slate" style="margin-top:14px">${ic('snow', 16)}<div>All ${NO_ANSWER_MAX} attempts used — moved to Cold Lead automatically.</div></div>`
+    : `<div class="banner bn-amber" style="margin-top:14px">${ic('bell', 16)}
+      <div><b>Attempt ${l.attempts + 1} of ${NO_ANSWER_MAX} due ${l.nextAt ? rel(l.nextAt).toLowerCase() : 'today'}.</b>
+      Status stays <b>Failed to Contact</b> and the counter rises ${gap === 1 ? 'daily' : `every ${gap} days`}. Only a reply changes the status, and only by hand.</div></div>`}
+  </div>`;
+  };
+  window.quietCard = function (l) {
+    const cold = l.quiet >= QUIET_MAX; const s = l.suppressed;
+    return `<div class="card">
+    <div class="card-h">${ic('clock', 16)}<h3>Went-quiet cadence</h3><span class="sp"></span>
+      <span class="chip">${l.quiet} of ${QUIET_MAX} · every ${QUIET_GAP} days</span></div>
+    <div class="cad">
+      ${Array.from({ length: QUIET_MAX }, (_, i) => {
+        const n = i + 1; const dn = n <= l.quiet; const now = !cold && n === l.quiet + 1;
+        return `<div class="cad-step ${dn ? 'done' : ''} ${now ? 'now' : ''}"><span class="bub">${dn ? ic('check', 11, 3) : n}</span>
+          <div class="lb">Follow-up ${n}</div><div class="dt">day ${n * QUIET_GAP}</div></div>`;
+      }).join('')}
+      <div class="cad-step ${cold ? 'cold' : ''}"><span class="bub">${ic('snow', 11)}</span><div class="lb">Cold Lead</div><div class="dt">day ${QUIET_MAX * QUIET_GAP}</div></div>
+    </div>
+    ${s && !cold ? `<div class="banner bn-amber" style="margin-top:14px">${ic('bell', 16)}<div><b>Follow-up ${s.n} of ${s.max} was not sent.</b> <span>${esc(s.why)}</span></div></div>` : ''}
+    <div class="banner ${cold ? 'bn-slate' : 'bn-blue'}" style="margin-top:14px">${ic('spark', 16)}
+      <div>${cold ? (QUIET_MAX === 3 ? 'Three follow-ups, no reply — moved to Cold Lead.' : `${QUIET_MAX} follow-ups, no reply — moved to Cold Lead.`)
+        : 'Every follow-up here lands outside the 24-hour window, so each one is a billable template send. Ask one multiple-choice question — <em>"pricing, trust, or timing?"</em>'}</div></div>
+  </div>`;
+  };
+  // Cold Lead banner: the win-back sentence only while rule r9 is on (it ships disabled, OA 5.5).
+  X.coldLine = function () {
+    const r9 = RULES.find((r) => r.id === 'r9');
+    return r9 && r9.on ? `Cadence exhausted. One win-back template is scheduled for day ${CFG.winbackDay}, then the ticket closes.` : 'Cadence exhausted.';
+  };
+  // Time on this lead: every logged call counts, answered ones too (the ticket's own record).
+  const protoLeadTime = window.leadTime;
+  window.leadTime = function (l) {
+    const t = protoLeadTime(l);
+    const extra = Math.max(0, (l.callCount || 0) - Math.max(t.callN, l.attempts || 0));
+    if (!extra) return t;
+    const add = extra * (CFG.noAnswerMin + CFG.wrapMin / 2);
+    return { ...t, call: t.call + add, total: Math.round(t.total + add), callN: t.callN + extra };
+  };
+
   // ───────────── conversation ─────────────
   // Template messages show exactly what was sent (the server renders them), not a re-render.
   const protoMsgHTML = window.msgHTML;
@@ -295,8 +376,17 @@
   window.saveCall = function (id) {
     const l = lead(id); const note = (document.getElementById('m-note') || {}).value || ''; const outcome = M.choice;
     closeModal();
-    act(() => logOutcome(l, outcome, note.trim()), 'Outcome logged');
+    let res = null;
+    act(async () => { res = await logOutcome(l, outcome, note.trim()); }).then(() => { if (res) callToast(l, outcome, res); });
   };
+  // the prototype's messages after a call, from what the server decided
+  function callToast(l, outcome, t) {
+    if (outcome === 'junk') return toast('Marked Junk Lead — excluded from your metrics');
+    if (outcome !== 'no_answer') return toast(`Set to ${STATUS[outcome].label} — book the walkthrough next`, 'ok');
+    if (t.status === 'cold_lead') return toast(`${l.name} moved to Cold Lead after ${t.attemptNo} attempts`, 'warn');
+    const gap = CFG.noAnswerGapD;
+    return toast(`Attempt ${t.attemptNo} logged. Attempt ${t.attemptNo + 1} is due ${gap === 1 ? 'tomorrow' : `in ${gap} days`}.`, 'ok');
+  }
   window.applyOutcome = function (l, outcome, note) { return act(() => logOutcome(l, outcome, note)); };
 
   window.runMacro = function (id, key) {

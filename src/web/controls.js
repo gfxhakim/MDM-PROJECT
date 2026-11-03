@@ -38,6 +38,8 @@ export const OA_CONTROLS = [
   ["<button class=\"btn btn-ghost btn-sm\" onclick=\"toast('Scorecard — weighted criteria, score and comment')\">Review</button>", "<button class=\"btn btn-ghost btn-sm\" disabled>Review</button>"],
   ["<button class=\"btn btn-ghost btn-sm\" onclick=\"toast('Reply sent to your shift lead')\">Respond</button>", "<button class=\"btn btn-ghost btn-sm\" disabled>Respond</button>"],
   ["<button class=\"btn btn-ghost\" onclick=\"toast('New rule — composed from the condition and action catalogue')\">${ic('plus',14)} New rule</button>", "${CTL.off('btn-ghost','plus','New rule',CTL.WHY.newRule)}"],
+  // the win-back sentence only while rule r9 is on (OA 5.5: r9 ships disabled)
+  [":'Cadence exhausted. One win-back template is scheduled for day 30, then the ticket closes.'}", ":MDM.coldLine()}"],
   ["<button class=\"btn btn-ghost\" onclick=\"toast('New template — submitted to Meta for approval before it can be used')\">${ic('plus',14)} New template</button>", "${CTL.off('btn-ghost','plus','New template',CTL.WHY.whatsapp)}"],
   ["<button class=\"btn btn-ghost btn-sm\" onclick=\"toast('Add field — no deployment needed')\">${ic('plus',12)} Add field</button>", "${CTL.off('btn-ghost btn-sm','plus','Add field',CTL.WHY.addField)}"],
   ["<button class=\"btn btn-ghost btn-sm\" onclick=\"toast('Add a status — configuration, not code')\">${ic('plus',12)} Add status</button>", "${CTL.off('btn-ghost btn-sm','plus','Add status',CTL.WHY.addStatus)}"],

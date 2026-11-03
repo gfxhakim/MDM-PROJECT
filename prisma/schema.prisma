@@ -67,23 +67,23 @@ model RoleElevation {
 // ───────────────────────── Platform core ─────────────────────────
 // contactType: merchant (pre-activation) | seller (activated) | end_customer | internal
 model Contact {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   name              String
   nameAr            String?
-  phone             String   @unique // E.164
+  phone             String    @unique // E.164
   country           String // LY | IQ | LB ...
-  contactType       String   @default("merchant")
+  contactType       String    @default("merchant")
   ownerAgentId      String?
-  ownerAgent        User?    @relation("ContactOwner", fields: [ownerAgentId], references: [id])
-  optedOut          Boolean  @default(false)
-  blocked           Boolean  @default(false)
+  ownerAgent        User?     @relation("ContactOwner", fields: [ownerAgentId], references: [id])
+  optedOut          Boolean   @default(false)
+  blocked           Boolean   @default(false)
   blockReason       String?
   sourceUtm         String? // channel + UTM / affiliate tag, immutable after creation
-  legacy            Boolean  @default(false) // imported from Zoho
+  legacy            Boolean   @default(false) // imported from Zoho
   mdmRef            String? // the merchant's seller id on the MDM platform (trackingId), once known
   mdmResponsibleRef String? // the MDM user responsible for the join (Seller.joinStatusResponsible); the lead's owner once imported
   mdmCreatedAt      DateTime? // when the merchant entered the MDM platform (Seller.createdAt) — the date filters use it
-  createdAt         DateTime @default(now())
+  createdAt         DateTime  @default(now())
 
   conversations Conversation[]
   tickets       Ticket[]
@@ -431,6 +431,23 @@ model MdmStaff {
   outcome      String    @default("{}") // JSON
 
   @@index([decision, scope])
+}
+
+// Everything MDM returns for a merchant or a person, kept exactly as MDM sent it (MDM Swagger):
+// the seller record (seller), each of its stores (store), the seller's own team members
+// (team_member), what MDM charges the seller per market (service_fees: plan, call-centre,
+// fulfilment and shipping pricing — finance only), and each MDM user (user). Read-only here: the
+// sync replaces a record whenever MDM's copy changes. Shown on the "From MDM" card.
+model MdmRecord {
+  id        String   @id @default(cuid())
+  kind      String // seller | store | team_member | service_fees | user
+  mdmRef    String // the record's id on MDM (service_fees: "<sellerRef>:<countryId>")
+  sellerRef String? // stores, team members and fees: the seller they belong to
+  data      String   @default("{}") // JSON, as MDM returned it
+  fetchedAt DateTime @default(now())
+
+  @@unique([kind, mdmRef])
+  @@index([sellerRef])
 }
 
 // Countries as MDM names them (id, alpha-3 code, name), learnt from every seller the sync reads;

@@ -173,11 +173,19 @@ export async function listStaff({ decision = 'waiting', scope = null, q = null, 
 }
 
 /** The lead MDM says this agent is responsible for goes to them — the platform's assignment, kept here. */
-export async function assignLeadToPlatformAgent(ticket, agent, { actorId = null } = {}, db = prisma) {
+export async function assignLeadToPlatformAgent(ticket, agent, { actorId = null, responsibleChanged = false } = {}, db = prisma) {
   if (!agent || ticket.assigneeId === agent.id || !OPEN.includes(ticket.status)) return null;
   const current = ticket.assigneeId ? await db.user.findUnique({ where: { id: ticket.assigneeId } }) : null;
   // two platform people: a move made here was recorded on MDM; the platform follows us, not the reverse
   if (current?.mdmRef) return null;
+  // A person here moved the lead (reassign, take-over, Assign now): MDM has no endpoint to record that,
+  // so MDM still names the earlier agent. The lead stays where the person put it until MDM names
+  // someone new for it — a sync never undoes a manager's decision.
+  if (!responsibleChanged && ticket.assigneeId) {
+    const moved = await db.eventLog.findFirst({ where: { entityType: 'ticket', entityId: ticket.id, actorId: { not: null },
+      action: { in: ['ticket.reassigned', 'ticket.taken_over', 'ticket.assigned'] }, NOT: { reason: { startsWith: 'Responsible agent on the MDM platform' } } } });
+    if (moved) return null;
+  }
   const updated = await changeTicket(db, ticket, { assigneeId: agent.id, holdReason: null, heldAt: null },
     { actorId, action: 'ticket.assigned', reason: `Responsible agent on the MDM platform: ${agent.name}` });
   const conv = await db.conversation.findFirst({ where: { contactId: ticket.contactId } });

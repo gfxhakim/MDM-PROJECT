@@ -19,6 +19,7 @@ import { dial, handleYeastarEvent, yeastarConfig, yeastarStatus } from '../integ
 import { runImport } from '../integrations/importer.js';
 import { OPTIONAL, optionalOn } from '../integrations/optional.js';
 import { pushPending, writebackStatus } from '../integrations/mdm-writeback.js';
+import { userRecord } from '../integrations/mdm-records.js';
 
 // A connector that is switched off answers like a route that does not exist.
 const ifOn = (name) => (_req, res, next) => (optionalOn(name) ? next() : res.status(404).json({ error: { code: 'not_found', message: 'No such endpoint.' } }));
@@ -108,6 +109,10 @@ integrationsRouter.get('/mdm/staff', requirePermission('integrations.manage'), a
 
 // { ids, action: import|leave_out|reopen, role?, markets?, note? } — each person reported on their
 // own, one audit entry for the run; an import then gives them the leads and sellers MDM ties to them.
+integrationsRouter.get('/mdm/staff/:mdmRef/record', requirePermission('integrations.manage'), ah(async (req, res) => {
+  res.json(await userRecord(req.params.mdmRef));
+}));
+
 integrationsRouter.post('/mdm/staff/decide', requirePermission('integrations.manage'), ah(async (req, res) => {
   res.json(await decideStaff(req.user, req.body ?? {}));
 }));
