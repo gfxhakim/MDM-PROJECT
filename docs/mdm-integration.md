@@ -58,8 +58,10 @@ bulk (at most 200 per run, a written note for a bulk run), the Admin can:
 Each seller in a run is handled and reported on its own (a refused seller does not stop the
 others); one audit entry per run carries the full list and every result (`mdm.skipped_decided`).
 A seller the pull later brings in by its own rules (for example after MDM corrects its country) is
-marked *imported*; one we placed or opened comes back on every run as "already here" and keeps
-its decision. Nothing on this list is written to MDM. **This list is not in the specs:** it answers
+marked *imported*; one we placed or opened keeps its decision. A merchant already here under the
+same MDM id and phone and still joining on MDM (usually a lead the pull opened itself) is not a
+skip: each pull carries its MDM data (`lead_updated`, counted as "leads updated") and closes any
+row still waiting for it. Nothing on this list is written to MDM. **This list is not in the specs:** it answers
 the owner's request of 2 Nov 2026 to keep every skipped seller aside and decide by hand; its
 actions are the spec's own mechanisms (AM 3.2, r1, capture r1, OA 13.2 bulk guardrails, one audit
 entry).

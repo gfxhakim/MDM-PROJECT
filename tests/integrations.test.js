@@ -328,13 +328,14 @@ test('skipped sellers are kept aside with the platform data; the Admin places th
   assert.equal(audits.length, 7);
   const retry = audits.find((a) => a.action === 'lead');
   assert.deepEqual(retry.items.map((i) => [i.mdmRef, i.ok]), [['SK-FR', false], ['SK-OLD', true]]); assert.equal(retry.requested, 2);
-  // the next sync reads the placed sellers' figures; a seller we opened as a lead comes back as "already here" and keeps its decision
+  // the next sync reads the placed sellers' figures; a seller we opened as a lead is a lead here now: its MDM data is carried and its row keeps its decision, untouched
   s = await run(mdm.fetchImpl);
   const frAfter = await prisma.seller.findUnique({ where: { mdmRef: 'SK-FR' } });
   assert.equal(frAfter.totalOrders, 6); assert.equal(frAfter.deliveryRate, 80); assert.ok(frAfter.lastSyncedAt);
   assert.ok((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-FR' } })).figuresAt);
   const oldRow = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-OLD' } });
-  assert.deepEqual([oldRow.decision, oldRow.reasonCode, oldRow.seenCount], ['lead', 'duplicate', 3]);
+  assert.deepEqual([oldRow.decision, oldRow.reasonCode, oldRow.seenCount], ['lead', 'stale', 2]);
+  assert.equal(s.leadsUpdated, 1);
   assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-REJ' } })).decision, null);
   // the platform fixes a seller's country: the sync brings it in by the normal rules and closes its row
   const fixed = fakeMdm({ sellers: [mdmSeller('SK-TN', '+21698123456', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', country: { id: 'c-tn', name: 'Tunisia', code: 'TUN' }, countries: [{ id: 'c-ly', name: 'Libya', code: 'LBY' }] })] });

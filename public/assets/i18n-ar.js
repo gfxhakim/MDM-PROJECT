@@ -1670,6 +1670,7 @@ Object.assign(window.I18N_AR, {
   'Loading…': 'جارٍ التحميل…',
   'done': 'تم',
   'skipped': 'تم التخطي',
+  'lead updated': 'تحديث عميل محتمل',
   'failed': 'فشل',
   'completed': 'مكتمل',
   'running': 'قيد التشغيل',

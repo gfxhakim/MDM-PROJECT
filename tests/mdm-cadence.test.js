@@ -19,6 +19,8 @@ const { hashPassword } = await import('../src/auth/service.js');
 const { runOnboardingSweep } = await import('../src/oa/rules.js');
 const { alignOwnership } = await import('../src/integrations/mdm-staff.js');
 const { rememberSkipped } = await import('../src/integrations/mdm-skipped.js');
+const { syncSellers } = await import('../src/integrations/mdm.js');
+const { fakeMdm, mdmSeller } = await import('./helpers/fake-mdm.js');
 
 const PASSWORD = 'pw-123456';
 const U = {};
@@ -109,4 +111,21 @@ test("'Open as lead' on the skipped list brings MDM's status, dates and history,
   await prisma.mdmSkipped.update({ where: { id: h.id }, data: { decision: null } });
   const again = await app.call('POST', '/api/integrations/mdm/skipped/decide', { token: await tok('admin'), body: { ids: [h.id], action: 'lead', market: 'LY' } });
   assert.match(JSON.stringify(again.body), /Already here as Yasmine/);
+});
+
+test('a lead the pull opened is not a skipped seller when MDM updates it: its data is carried, and an old "already here" row is closed', async () => {
+  const recent = new Date(Date.now() - 2 * DAY).toISOString();
+  const pull = (sellers) => { process.env.MDM_API_KEY = 'k'; return syncSellers({ full: true, actorId: U.admin.id, fetchImpl: fakeMdm({ sellers }).fetchImpl }).finally(() => { delete process.env.MDM_API_KEY; }); };
+  let s = await pull([mdmSeller('MDM-RR-1', '+218915550106', { firstName: 'Lamia', createdAt: recent })]);
+  assert.equal(s.leadsCreated, 1);
+  // a row the pull wrote before this fix, for the same lead, still waiting
+  await rememberSkipped({ mdmRef: 'MDM-RR-1', name: 'Lamia', phone: '+218915550106', country: 'LY' }, { code: 'duplicate', reason: 'Already a contact here — linked to its platform id.' });
+  s = await pull([mdmSeller('MDM-RR-1', '+218915550106', { firstName: 'Lamia', createdAt: recent, joinStatus: 'not answered', responsible: null, updatedAt: new Date().toISOString() })]);
+  assert.deepEqual([s.leadsUpdated, s.leadsCreated, s.skippedCount, s.errorCount], [1, 0, 0, 0]);
+  assert.equal(s.live.recent.find((e) => e.ref === 'MDM-RR-1').action, 'lead_updated');
+  const row = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'MDM-RR-1' } });
+  assert.deepEqual([row.decision, JSON.parse(row.outcome).action], ['imported', 'lead_updated'], 'closed, not waiting');
+  assert.equal(await prisma.mdmSkipped.count({ where: { decision: null } }), 0);
+  assert.equal(await prisma.contact.count({ where: { mdmRef: 'MDM-RR-1' } }), 1);
+  assert.equal(await prisma.ticket.count({ where: { type: 'onboarding_task' } }), 1);
 });

@@ -194,7 +194,7 @@ function syncText(sm) {
   const skipped = sm.skippedCount ?? sm.skipped?.length ?? 0;
   const errors = sm.errorCount ?? sm.errors?.length ?? 0;
   const read = sm.total ? `${(sm.fetched ?? 0).toLocaleString()} of ${sm.total.toLocaleString()} sellers read` : `${sm.fetched ?? 0} sellers read`;
-  return `${sm.full ? 'full · ' : ''}${read}, ${sm.updated ?? 0} sellers updated, ${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`
+  return `${sm.full ? 'full · ' : ''}${read}, ${sm.updated ?? 0} sellers updated, ${sm.leadsUpdated ? `${sm.leadsUpdated} ${sm.leadsUpdated === 1 ? 'lead' : 'leads'} updated, ` : ''}${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`
     + `${skipped ? `, ${skipped} skipped` : ''}${sm.keptOut ? `, ${sm.keptOut} left out (deleted here)` : ''}${errors ? `, ${errors} errors` : ''}${sm.warningCount ? `, ${sm.warningCount} figures missing` : ''}`;
 }
 
@@ -203,8 +203,8 @@ function liveHtml(r) {
   const sm = r.summary || {}; const live = sm.live || {};
   const pct = sm.total ? Math.min(100, Math.round(((sm.fetched ?? 0) / sm.total) * 100)) : null;
   const mins = Math.max(0, Math.round((Date.now() - new Date(r.startedAt).getTime()) / 60000));
-  const label = { seller_created: 'seller', lead_created: 'lead', updated: 'updated', skipped: 'skipped', error: 'error' };
-  const cls = { seller_created: 'on', lead_created: 'on', updated: 'on', skipped: 'off', error: 'fail' };
+  const label = { seller_created: 'seller', lead_created: 'lead', updated: 'updated', lead_updated: 'lead updated', skipped: 'skipped', error: 'error' };
+  const cls = { seller_created: 'on', lead_created: 'on', updated: 'on', lead_updated: 'on', skipped: 'off', error: 'fail' };
   const rows = (live.recent ?? []).map((e) => `<li><span class="t">${new Date(e.t).toLocaleTimeString()}</span><span class="pill ${cls[e.action] ?? 'off'}">${label[e.action] ?? esc(e.action)}</span>`
     + `<span><b>${esc(e.ref ?? '')}</b> ${esc(e.name ?? '')} — ${esc(e.note ?? '')}</span></li>`).join('');
   return `<div class="card" style="grid-column:1/-1"><h2>Importing from MDM now <span class="pill off">live</span></h2>`

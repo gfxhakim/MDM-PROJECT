@@ -205,6 +205,14 @@ export async function upsertFromMdm(row, ctx, db = prisma) {
     await carryPlatformData(byRef, { ...row, mdmRef: String(ref) }, ctx, db);
     return skip('phone_changed', `MDM now has ${phone} for this merchant; here ${byRef.name} has ${byRef.phone}. Nothing new was opened — change the number on the contact if MDM is right.`);
   }
+  // Already here under this MDM id and phone, still joining (usually a lead the sync opened itself):
+  // its MDM data is carried and that is all. It was placed, so it is not a skip and never goes back on
+  // the skipped list; a row still waiting there for it is closed. (Accepted on MDM but still a lead
+  // here is reported below: it has to be activated in the onboarding console.)
+  if (byRef && !accepted) {
+    await carryPlatformData(byRef, { ...row, mdmRef: String(ref) }, ctx, db);
+    return { ok: true, action: 'lead_updated', ref, contactId: byRef.id };
+  }
   // A merchant already here is reported as such whatever the platform says about its country.
   const contact = byRef ?? await db.contact.findUnique({ where: { phone } });
   if (contact) {
@@ -337,7 +345,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
   const api = client({ url: c.url, apiKey: c.apiKey, paymentPassword: c.paymentPassword, fetchImpl });
   const run = await db.integrationRun.create({ data: { kind: 'mdm_sync', status: 'running', actorId } });
   onStarted?.(run.id);
-  const summary = { full: !last, total: null, fetched: 0, updated: 0, leadsCreated: 0, sellersCreated: 0, skippedCount: 0, errorCount: 0, warningCount: 0,
+  const summary = { full: !last, total: null, fetched: 0, updated: 0, leadsUpdated: 0, leadsCreated: 0, sellersCreated: 0, skippedCount: 0, errorCount: 0, warningCount: 0,
     reasons: { skipped: {}, errors: {}, warnings: {} }, live: { current: null, recent: [] }, staff: { read: 0, error: null }, aligned: { leads: 0, sellers: 0 },
     records: { sellers: 0, stores: 0, teamMembers: 0, fees: 0, users: 0 } };
   // everything MDM holds for each merchant and person, kept as MDM sends it (mdm-records.js)
@@ -351,6 +359,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
   const record = async (r, row, metrics = {}) => {
     if (r.action === 'updated') summary.updated++;
     else if (r.action === 'lead_created') summary.leadsCreated++;
+    else if (r.action === 'lead_updated') summary.leadsUpdated++;
     else if (r.action === 'seller_created') summary.sellersCreated++;
     else if (r.action === 'skipped') { summary.skippedCount++; tally(summary.reasons.skipped, r.ref ?? row?.phone, r.reason); }
     else if (r.action === 'kept_out') summary.keptOut = (summary.keptOut ?? 0) + 1;
@@ -358,6 +367,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
     feed({ ref: r.ref ?? row?.mdmRef ?? null, name: row?.name ?? null, action: r.action,
       note: r.action === 'seller_created' ? `${row?.country ?? ''} book · ${figures(metrics)}${r.ownership ? ` · ${r.ownership}` : ''}`
         : r.action === 'updated' ? figures(metrics)
+          : r.action === 'lead_updated' ? 'onboarding lead already here — MDM data carried'
           : r.action === 'lead_created' ? `onboarding lead${row?.country ? ` (${row.country})` : ''}${r.owner ? ` · ${r.owner} (responsible on MDM)` : ''}`
             : (r.reason ?? '') });
     // Every skipped seller is kept aside, with what the platform says, for an Admin's decision.
@@ -478,6 +488,6 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
     await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync_failed', reason: err.message }, db);
     throw err;
   }
-  await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync', after: { full: summary.full, fetched: summary.fetched, updated: summary.updated, leadsCreated: summary.leadsCreated, sellersCreated: summary.sellersCreated, skipped: summary.skippedCount, errors: summary.errorCount } }, db);
+  await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync', after: { full: summary.full, fetched: summary.fetched, updated: summary.updated, leadsUpdated: summary.leadsUpdated, leadsCreated: summary.leadsCreated, sellersCreated: summary.sellersCreated, skipped: summary.skippedCount, errors: summary.errorCount } }, db);
   return summary;
 }
