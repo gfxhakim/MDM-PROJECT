@@ -59,6 +59,13 @@ button.btn.danger{color:#B42318;border-color:#F3C1BC}
 input[type=date]{font:inherit;font-size:13px;height:34px;border:1px solid var(--line);border-radius:var(--r);padding:0 8px;background:#fff}
 input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;border:1px solid var(--line);border-radius:var(--r);padding:0 10px;min-width:240px;background:#fff}
 #skipped table td,#staff table td{max-width:320px}
+#staff td.rec{max-width:none;background:var(--bg)}
+#staff .rec .card{padding:12px}
+#staff .rec .card-h{display:flex;align-items:center;gap:8px;margin-bottom:6px} #staff .rec .card-h h3{margin:0;font-size:14px} #staff .rec .sp{flex:1}
+#staff .rec .chip{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}
+#staff .rec .kv{display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px dashed var(--line);font-size:12.5px} #staff .rec .kv .k{color:var(--muted)}
+#staff .rec .eyebrow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)} #staff .rec .tiny{font-size:12px}
+#staff button.btn.recbtn{height:24px;padding:0 8px;font-size:11.5px;margin-top:4px}
 #skipped ul,#staff ul{margin:6px 0 0;padding-inline-start:18px}
 .chk{display:inline-flex;align-items:center;gap:4px;margin-inline-end:8px}
 .tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;background:#F3F4F6;color:var(--ink3)}
@@ -176,6 +183,7 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
 <script src="/assets/api.js"></script>
 <script src="/assets/i18n.js"></script>
 <script src="/assets/i18n-ar.js"></script>
+<script src="/assets/mdm-record.js"></script>
 <script>
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const when = (d) => d ? new Date(d).toLocaleString() : '—';
@@ -526,7 +534,7 @@ async function restoreDeleted() {
 }
 
 // ───────── People on MDM: every platform user, imported here with a role or left out ─────────
-const st = { tab: 'waiting', scope: '', q: '', range: { when: '', from: '', to: '' }, data: null, selected: new Set(), loadedAt: 0 };
+const st = { tab: 'waiting', scope: '', q: '', range: { when: '', from: '', to: '' }, data: null, selected: new Set(), loadedAt: 0, rec: new Set() };
 const ST_DECISION = { imported: 'Imported', left_out: 'Left out' };
 const showStErr = (e) => { document.getElementById('stMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
 
@@ -577,7 +585,9 @@ function renderStaff() {
   document.getElementById('stRows').innerHTML = d.items.length ? d.items.map((i) => {
     const box = selectable ? `<input type="checkbox" data-id="${i.id}" ${st.selected.has(i.id) ? 'checked' : ''} ${i.blocked ? `disabled title="${esc(i.blocked)}"` : ''}>` : '';
     const who = `<b data-i18n="off">${esc(i.name)}</b><br><span class="muted" data-i18n="off">${esc(i.email || '—')}</span>${i.phones.length ? `<br><span class="muted" data-i18n="off">${esc(i.phones.join(', '))}</span>` : ''}`
-      + `${i.usernames.length && !(i.usernames.length === 1 && i.usernames[0] === i.email) ? `<br><span class="muted">MDM username:</span> <span data-i18n="off">${esc(i.usernames.join(', '))}</span>` : ''}`;
+      + `${i.usernames.length && !(i.usernames.length === 1 && i.usernames[0] === i.email) ? `<br><span class="muted">MDM username:</span> <span data-i18n="off">${esc(i.usernames.join(', '))}</span>` : ''}`
+      // everything MDM holds for this person, read-only
+      + `<br><button class="btn recbtn" data-rec="${esc(i.mdmRef)}">${st.rec.has(i.mdmRef) ? 'Hide' : 'MDM record'}</button>`;
     const onMdm = `<span data-i18n="off">${esc(i.role || '—')}</span> <span class="muted">·</span> <span data-i18n="off">${esc(i.scope || '—')}</span>`
       + `<br><span class="muted">${i.markets.length ? i.markets.map((m) => `<span>${esc(d.markets[m] || m)}</span>`).join(', ') : `<span>No market in Libya, Iraq or Lebanon</span>${i.countries.length ? ` <span data-i18n="off">(${esc(i.countries.join(', '))})</span>` : ''}`}</span>`
       + `${i.restricted ? '<br><span class="tag off">Restricted on MDM</span>' : ''}${i.lastLoginAt ? `<br><span class="muted">Last MDM sign-in</span> <span class="muted" data-i18n="off">${when(i.lastLoginAt)}</span>` : ''}`;
@@ -587,12 +597,14 @@ function renderStaff() {
         + `${i.decisionNote ? `<br><span class="muted" data-i18n="off">“${esc(i.decisionNote)}”</span>` : ''}`
         + `${i.user ? `<br><span>${esc(d.roles[i.user.role] || i.user.role)}</span> <span class="muted">·</span> <span>${i.user.markets.map((m) => d.markets[m] || m).map(esc).join(', ') || '—'}</span>${i.user.active ? '' : ' <span class="tag off">switched off</span>'}${i.outcome.linked ? ' <span class="tag">linked to the account already here</span>' : ''}` : ''}`;
     return `<tr><td>${box}</td><td>${who}</td><td>${onMdm}</td><td>${onMdmCell(i)}</td><td>${decision}</td>`
-      + `<td class="muted"><span data-i18n="off">${i.seenCount}×</span> · <span>last seen</span> <span data-i18n="off">${when(i.lastSeenAt)}</span></td></tr>`;
+      + `<td class="muted"><span data-i18n="off">${i.seenCount}×</span> · <span>last seen</span> <span data-i18n="off">${when(i.lastSeenAt)}</span></td></tr>`
+      + (st.rec.has(i.mdmRef) ? `<tr><td></td><td colspan="5" class="rec">${MDMREC.person(i.mdmRef)}</td></tr>` : '');
   }).join('') : `<tr><td colspan="6" class="muted">${waiting ? (c.waiting + c.imported + c.left_out ? 'Nobody waiting — everyone MDM lists is imported or left out.' : 'No users read from MDM yet — run a sync. If MDM refused the call, the status card above says so.') : 'Nothing here yet.'}</td></tr>`;
   for (const b of document.querySelectorAll('#stTabs .tab')) b.onclick = () => { st.tab = b.dataset.tab; st.selected.clear(); document.getElementById('stMsg').innerHTML = ''; loadStaff().catch(showStErr); };
   const all = document.getElementById('stAll');
   if (all) all.checked = d.items.some((i) => !i.blocked) && d.items.every((i) => i.blocked || st.selected.has(i.id));
   if (all) all.onchange = () => { for (const i of d.items) if (!i.blocked) { if (all.checked) st.selected.add(i.id); else st.selected.delete(i.id); } renderStaff(); };
+  for (const b of document.querySelectorAll('#stRows button[data-rec]')) b.onclick = () => { const k = b.dataset.rec; if (st.rec.has(k)) st.rec.delete(k); else st.rec.add(k); renderStaff(); };
   for (const cb of document.querySelectorAll('#stRows input[type=checkbox]')) cb.onchange = () => { if (cb.checked) st.selected.add(cb.dataset.id); else st.selected.delete(cb.dataset.id); renderStaff(); };
   I18N.apply(document.getElementById('staff'));
 }

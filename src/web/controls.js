@@ -38,6 +38,8 @@ export const OA_CONTROLS = [
   ["<button class=\"btn btn-ghost btn-sm\" onclick=\"toast('Scorecard — weighted criteria, score and comment')\">Review</button>", "<button class=\"btn btn-ghost btn-sm\" disabled>Review</button>"],
   ["<button class=\"btn btn-ghost btn-sm\" onclick=\"toast('Reply sent to your shift lead')\">Respond</button>", "<button class=\"btn btn-ghost btn-sm\" disabled>Respond</button>"],
   ["<button class=\"btn btn-ghost\" onclick=\"toast('New rule — composed from the condition and action catalogue')\">${ic('plus',14)} New rule</button>", "${CTL.off('btn-ghost','plus','New rule',CTL.WHY.newRule)}"],
+  // the merchant's record as MDM holds it, read-only (HAKIM 2 Nov: every piece of MDM data)
+  ["\n      <div class=\"card\">\n        <div class=\"card-h\">${ic('file',16)}<h3>Handoff record</h3></div>", "\n      ${MDMREC.merchant('ticketId', l.id)}\n      <div class=\"card\">\n        <div class=\"card-h\">${ic('file',16)}<h3>Handoff record</h3></div>"],
   // the win-back sentence only while rule r9 is on (OA 5.5: r9 ships disabled)
   [":'Cadence exhausted. One win-back template is scheduled for day 30, then the ticket closes.'}", ":MDM.coldLine()}"],
   ["<button class=\"btn btn-ghost\" onclick=\"toast('New template — submitted to Meta for approval before it can be used')\">${ic('plus',14)} New template</button>", "${CTL.off('btn-ghost','plus','New template',CTL.WHY.whatsapp)}"],
@@ -50,6 +52,8 @@ export const OA_CONTROLS = [
 ];
 
 export const AM_CONTROLS = [
+  // the seller's record as MDM holds it, read-only (HAKIM 2 Nov: every piece of MDM data)
+  ["\n    </div>\n\n    ${convPane(s,own)}", "\n      ${MDMREC.merchant('sellerId', s.id)}\n    </div>\n\n    ${convPane(s,own)}"],
   ["<button class=\"nav-item\" onclick=\"toast('OmniDesk — the full agent workspace. Your portfolio is a view of the same conversations.')\">\n      <span class=\"nav-ico\" style=\"background:#EEF2FF;color:#4F46E5\">${ic('chat',15)}</span> OmniDesk\n      <span class=\"chev\">${ic('chev',13)}</span></button>", "${MDM.navOmni()}"],
   ["<button class=\"nav-item dim\" onclick=\"toast('Onboarding (OA) — the section that hands sellers over to you. Read-only for the AM role.')\">\n      <span class=\"nav-ico\">${ic('target',15)}</span> Onboarding (OA) <span class=\"chip\" style=\"margin-left:auto\">read</span></button>", "${MDM.navOa()}"],
   ["<button class=\"nav-item dim\" onclick=\"toast('Orders, parcels and shipping — read-only for the Account Manager role')\">\n      <span class=\"nav-ico\">${ic('truck',15)}</span> Orders &amp; Parcels <span class=\"chip\" style=\"margin-left:auto\">read</span></button>", "${CTL.navOff('truck','Orders &amp; Parcels',CTL.WHY.orders,'<span class=\"chip\" style=\"margin-left:auto\">read</span>')}"],

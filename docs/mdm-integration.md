@@ -165,6 +165,27 @@ The API takes `from` and `to` (ISO dates) on `/api/admin/audit`, `/api/admin/del
 
 Health score and lifecycle stage are never read from MDM. Our app derives them.
 
+**Everything MDM holds, kept as MDM sends it** (`src/integrations/mdm-records.js`, table
+`MdmRecord`). Each run also keeps, unchanged, the full record of every seller read
+(`POST /api/sellers/search`, all 31 fields), every store changed since the last run
+(`POST /api/stores/search`), each seller's own team members
+(`POST /api/sellers/{id}/team-members/search`), what MDM charges the seller in each of its
+countries (`GET /api/sellers/{id}/service-fees?countryId=`) and every MDM user
+(`POST /api/users/search`). The lead page, the seller page and People on MDM show it on a
+read-only **From MDM** card. Only someone who may see the merchant can read it (a foreign seller is
+not-found). The fees are left out of the answer for roles without "See cost / fee / margin". An
+endpoint MDM refuses (401/403/404/405) is skipped for the rest of the run and reported once as a
+warning; the import itself never stops for it. These records fill on the next run that reads
+each seller, so a **Full resync** fills them all at once.
+
+**MDM leads on the cadence (OA 3.3, 3.5).** A merchant is found by its MDM id before its phone.
+A phone changed on MDM opens nothing new: the seller waits on the skipped list as "Phone changed
+on MDM" for an Admin. A lead MDM marks not answered arrives as Failed to Contact, due at the
+import, with its first attempt due now and the counter at 0. The notes our write-back sends
+(they end with ", onboarding console") are not imported back as history. A lead a manager moved
+here stays where they put it until MDM names a new responsible agent. "Open as lead" on the
+skipped list goes through the same path as the pull.
+
 **Real time.** MDM has no outbound webhooks for sellers or orders, so changes arrive with the next
 pull: within 15 minutes, or whatever `MDM_SYNC_MINUTES` is set to. For instant updates, MDM would
 need to call our webhook. See section 3.

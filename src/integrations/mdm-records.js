@@ -125,23 +125,25 @@ export async function sellerRecords(user, mdmRef, db = prisma) {
  * foreign seller is not-found, AC-20).
  */
 export async function recordsFor(user, { ticketId, sellerId, contactId } = {}, db = prisma) {
-  let contact = null;
+  let contact = null; let sellerRef = null;
   if (ticketId) {
     const t = await db.ticket.findFirst({ where: { id: ticketId, ...onboardingReadWhere(user) }, include: { contact: true } });
     contact = t?.contact ?? null;
   } else if (sellerId) {
     const scope = sellerWhere(user);
     const s = scope === null ? null : await db.seller.findFirst({ where: { id: sellerId, ...scope }, include: { contact: true } });
-    contact = s?.contact ?? null;
+    contact = s?.contact ?? null; sellerRef = s?.mdmRef ?? null;
   } else if (contactId) {
     const scope = sellerWhere(user);
     const s = scope === null ? null : await db.seller.findFirst({ where: { contactId, ...scope }, include: { contact: true } });
     const t = s ? null : await db.ticket.findFirst({ where: { contactId, ...onboardingReadWhere(user) }, include: { contact: true } });
-    contact = s?.contact ?? t?.contact ?? null;
+    contact = s?.contact ?? t?.contact ?? null; sellerRef = s?.mdmRef ?? null;
   } else throw badRequest('Name a ticketId, sellerId or contactId.');
   if (!contact) throw notFound('Not found.');
-  if (!contact.mdmRef) return { mdmRef: null, fetchedAt: null, seller: null, stores: [], teamMembers: [], ...(grant(user.role, 'finance.view_cost') === true ? { fees: [] } : { withheld: [] }) };
-  return sellerRecords(user, contact.mdmRef, db);
+  // the seller record carries the MDM id for a seller placed here; a lead carries it on the contact
+  const ref = contact.mdmRef ?? sellerRef;
+  if (!ref) return { mdmRef: null, fetchedAt: null, seller: null, stores: [], teamMembers: [], ...(grant(user.role, 'finance.view_cost') === true ? { fees: [] } : { withheld: [] }) };
+  return sellerRecords(user, ref, db);
 }
 
 /** One MDM user's record (People on MDM), for the Admin. */

@@ -35,6 +35,7 @@ const TAIL = (adapter) => `
 <script src="/assets/presence.js"></script>
 <script src="/assets/toast.js"></script>
 <script src="/assets/controls.js"></script>
+<script src="/assets/mdm-record.js"></script>
 <script src="/assets/${adapter}"></script>
 </html>`;
 
