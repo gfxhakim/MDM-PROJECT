@@ -27,12 +27,14 @@ export class ConfigError extends Error {
 
 // ─────────────────────────── permissions ───────────────────────────
 // Owner column of Appendix D → user roles. manage_automation is granted to MANAGER by default
-// (roles & grants arrive with step 3; ADMIN can change everything).
+// (ADMIN can change everything). "Admin" is the owner column of AM Appendix D only: the AM module's
+// Administrator, which is also the Head of AM (AM 9.1) — so the Head of AM changes the
+// account-management parameters and none of the onboarding ones.
 const OWNER_ROLES = {
   Manager: ['MANAGER', 'ADMIN'],
   manage_automation: ['MANAGER', 'ADMIN'],
   Administrator: ['ADMIN'],
-  Admin: ['ADMIN'],
+  Admin: ['ADMIN', 'HEAD_OF_AM'],
 };
 
 export function canEdit(role, key) {

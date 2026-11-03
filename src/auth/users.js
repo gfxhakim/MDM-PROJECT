@@ -14,6 +14,8 @@ import { pickAccountManager } from '../am/handover.js';
 import { addSystemLine } from '../core/conversations.js';
 import { notifyRole } from '../core/notifications.js';
 import { TICKET_TYPES } from '../core/ticketTypes.js';
+import { ROLES } from './permissions.js';
+import { AM_ADMINS } from '../auth/scope.js';
 
 const OPEN = TICKET_TYPES.onboarding_task.openStatuses;
 const parse = (s, fallback) => { try { return JSON.parse(s) ?? fallback; } catch { return fallback; } };
@@ -56,17 +58,17 @@ export async function setPassword(actor, userId, password, db = prisma) {
  * them (when that person is here and active), else AM 3.2, else unassigned with one alert to the
  * Admins for the whole run. The account must already be inactive, so it is never picked itself.
  */
-async function releaseWork(actorId, user, why, db) {
+async function releaseWork(actorId, user, why, db, { leads = true, sellers = true } = {}) {
   const now = new Date();
   const moved = { leadsHeld: 0, sellersMoved: 0, sellersUnassigned: 0 };
   const { values: config } = await getLiveConfig(db);
-  for (const t of await db.ticket.findMany({ where: { type: 'onboarding_task', status: { in: OPEN }, assigneeId: user.id } })) {
+  for (const t of leads ? await db.ticket.findMany({ where: { type: 'onboarding_task', status: { in: OPEN }, assigneeId: user.id } }) : []) {
     await db.ticket.update({ where: { id: t.id }, data: { assigneeId: null, holdReason: 'agent deactivated', heldAt: now } });
     await logEvent({ actorId, entityType: 'ticket', entityId: t.id, action: 'ticket.held', before: { assigneeId: user.id }, after: { assigneeId: null, holdReason: 'agent deactivated' }, reason: why }, db);
     moved.leadsHeld++;
   }
   const unassigned = [];
-  for (const s of await db.seller.findMany({ where: { assignedAccountManagerId: user.id }, include: { contact: true } })) {
+  for (const s of sellers ? await db.seller.findMany({ where: { assignedAccountManagerId: user.id }, include: { contact: true } }) : []) {
     const named = s.mdmManagerRef
       ? await db.user.findFirst({ where: { mdmManagerRef: s.mdmManagerRef, role: 'ACCOUNT_MANAGER', active: true, removedAt: null, NOT: { id: user.id } } })
       : null;
@@ -76,7 +78,7 @@ async function releaseWork(actorId, user, why, db) {
       await db.seller.update({ where: { id: s.id }, data: { assignedAccountManagerId: pick.manager.id } });
       await db.contact.update({ where: { id: s.contactId }, data: { ownerAgentId: pick.manager.id } });
       await db.ticket.updateMany({ where: { sellerId: s.id, type: 'am_task', status: 'open' }, data: { assigneeId: pick.manager.id } });
-      if (conv) await addSystemLine(conv.id, `Account manager changed to ${pick.manager.name}: ${user.name}'s account ${why.startsWith('Removed') ? 'was removed' : 'was switched off'}.`, db);
+      if (conv) await addSystemLine(conv.id, `Account manager changed to ${pick.manager.name}: ${user.name}'s account ${why.startsWith('Removed') ? 'was removed' : why.startsWith('Role changed') ? 'changed role' : 'was switched off'}.`, db);
       await logEvent({ actorId, entityType: 'seller', entityId: s.id, action: 'seller.reassigned', before: { assignedAccountManagerId: user.id },
         after: { assignedAccountManagerId: pick.manager.id, ...(pick.fromPlatform ? { fromPlatform: true } : {}) }, reason: `${user.name}: ${why}` }, db);
       moved.sellersMoved++;
@@ -89,7 +91,7 @@ async function releaseWork(actorId, user, why, db) {
     }
   }
   if (unassigned.length) {
-    await notifyRole('ADMIN', { kind: 'am.r1.no_manager', title: `${unassigned.length} seller${unassigned.length === 1 ? '' : 's'} without an account manager`,
+    await notifyRole(AM_ADMINS, { kind: 'am.r1.no_manager', title: `${unassigned.length} seller${unassigned.length === 1 ? '' : 's'} without an account manager`,
       body: `${user.name}: ${why}. ${[...new Set(unassigned)].join(' ')}`, dedupeKey: `user.released:${user.id}:${now.toISOString()}` }, db);
   }
   return moved;
@@ -107,6 +109,46 @@ export async function setActive(actor, userId, active, reason, db = prisma) {
   const moved = active ? { leadsHeld: 0, sellersMoved: 0, sellersUnassigned: 0 } : await releaseWork(actor.id, user, why, db);
   await logEvent({ actorId: actor.id, entityType: 'user', entityId: userId, action: active ? 'user.activated' : 'user.deactivated', before: { active: user.active }, after: { active: !!active, ...moved }, reason: why }, db);
   return { ok: true, userId, active: !!active, ...moved };
+}
+
+/** The roles an account can hold here, as the Accounts page names them. */
+export const ROLE_NAMES = {
+  OA_AGENT: 'Onboarding agent', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', ADMIN: 'Administrator',
+  ACCOUNT_MANAGER: 'Account manager', HEAD_OF_AM: 'Head of AM', READ_ONLY: 'Read-only',
+};
+// Only these two roles are matched to work by market (OA 4.2 capacity, AM 3.2 handover).
+const NEEDS_MARKET = ['OA_AGENT', 'ACCOUNT_MANAGER'];
+const MARKET_CODES = ['LY', 'IQ', 'LB'];
+
+/**
+ * Give an account another role (OA Appendix A "Manage roles & permissions": Admin). Permissions
+ * belong to roles, never to people (OA Part 9), so this is the only way to change what someone may
+ * do. Work the old role held is handed on exactly as when the account is switched off: open leads to
+ * the holding queue, sellers to the manager MDM names or the same-market, smallest-book manager.
+ * The change takes effect on the person's next click (the role is re-read on every request).
+ * `markets` (optional) replaces the account's markets in the same step.
+ */
+export async function changeRole(actor, userId, role, reason, markets, db = prisma) {
+  const why = written(reason);
+  if (!ROLES.includes(role) || !ROLE_NAMES[role]) throw badRequest(`Choose a role: ${Object.values(ROLE_NAMES).join(', ')}.`);
+  const user = await db.user.findUnique({ where: { id: userId } });
+  if (!user) throw notFound('No such account.');
+  if (user.removedAt) throw badRequest('This account was removed. Put it back first.');
+  if (user.id === actor.id) throw badRequest('You cannot change your own role.');
+  if (user.role === role) throw badRequest(`This account is already ${ROLE_NAMES[role]}.`);
+  if (user.role === 'ADMIN' && user.active && !(await db.user.count({ where: { role: 'ADMIN', active: true, removedAt: null, NOT: { id: user.id } } }))) {
+    throw badRequest('This is the last active Administrator — changing its role would lock everyone out.');
+  }
+  if (markets != null && (!Array.isArray(markets) || markets.some((m) => !MARKET_CODES.includes(m)))) throw badRequest('Markets are LY, IQ or LB.');
+  const before = parse(user.markets, []);
+  const after = markets != null ? [...new Set(markets)] : before;
+  if (NEEDS_MARKET.includes(role) && !after.length) throw badRequest(`A ${ROLE_NAMES[role]} is matched to work by market — tick at least one market.`);
+  await db.user.update({ where: { id: userId }, data: { role, ...(markets != null ? { markets: JSON.stringify(after) } : {}) } });
+  // Leads stay with someone who is still an onboarding agent, sellers with someone still an account manager.
+  const moved = await releaseWork(actor.id, user, `Role changed to ${ROLE_NAMES[role]}: ${why}`, db, { leads: role !== 'OA_AGENT', sellers: role !== 'ACCOUNT_MANAGER' });
+  await logEvent({ actorId: actor.id, entityType: 'user', entityId: userId, action: 'user.role_changed',
+    before: { role: user.role, markets: before }, after: { role, markets: after, ...moved }, reason: why }, db);
+  return { ok: true, userId, role, markets: after, ...moved };
 }
 
 /**

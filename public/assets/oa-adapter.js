@@ -1152,7 +1152,7 @@
     const me = await API.me();
     X.me = me.user; X.grants = me.grants;
     ME = me.user.id; // eslint-disable-line no-global-assign
-    if (me.user.role === 'ACCOUNT_MANAGER') { location.href = '/am'; return; }
+    if (['ACCOUNT_MANAGER', 'HEAD_OF_AM'].includes(me.user.role)) { location.href = '/am'; return; }
     S.role = API.canSeeAdmin(me.user.role) && me.user.role !== 'OA_AGENT' && location.hash.startsWith('#/a/') ? 'admin' : (me.user.role === 'OA_AGENT' ? 'agent' : (location.hash.startsWith('#/a/') ? 'admin' : 'agent'));
     X.macros = await API.get('/api/oa/macros').catch(() => []);
     await reload();

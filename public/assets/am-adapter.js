@@ -217,7 +217,8 @@
   // ───────────── identity & role ─────────────
   window.save = function () {};
   window.resetDemo = function () { reload().then(() => toast('Reloaded from the server', 'ok')); };
-  const isHead = () => X.me.role === 'ADMIN'; // the Head of AM workspace (AM Appendix A: Admin)
+  // the Head of AM workspace (AM Appendix A: Admin) — the Head of AM's own account, or the platform Admin
+  const isHead = () => ['ADMIN', 'HEAD_OF_AM'].includes(X.me.role);
   window.setRole = function (r) {
     if (r === 'admin' && !isHead()) return toast('The Head of Account Management workspace is not part of your role.', 'warn');
     S.role = r; S.sel = []; location.hash = r === 'admin' ? '#/a/ops' : '#/';
@@ -231,7 +232,7 @@
         <button class="${adm ? 'on' : ''}" onclick="setRole('admin')">Head of AM</button></span>` : ''}
       <span class="me" style="${adm ? 'background:#4F46E5' : ''}">
         <span class="av" style="${adm ? 'color:#4F46E5' : ''}">${initials(X.me.name)}</span> <span data-i18n="off">${esc(X.me.name)}</span></span>
-      <a class="btn btn-ghost btn-sm" href="/oa" style="${X.me.role === 'ACCOUNT_MANAGER' ? 'display:none' : ''}">Onboarding</a>
+      <a class="btn btn-ghost btn-sm" href="/oa" style="${X.me.role === 'ADMIN' ? '' : 'display:none'}">Onboarding</a>
       ${X.me.role === 'ADMIN' && adm ? '<a class="btn btn-ghost btn-sm" href="/integrations">Integrations</a>' : ''}
       <button class="btn btn-ghost btn-sm" onclick="API.logout()">Sign out</button>`;
   };
@@ -475,10 +476,15 @@
   X.navOmni = () => (isHead()
     ? `<button class="nav-item" onclick="setRole('admin');location.hash='#/a/monitor'"><span class="nav-ico" style="background:#EEF2FF;color:#4F46E5">${ic('chat', 15)}</span> OmniDesk <span class="chev">${ic('chev', 13)}</span></button>`
     : CTL.navOff('chat', 'OmniDesk', CTL.WHY.omni));
-  // Onboarding (OA): the Admin is the same admin in the other section (the prototype's words).
-  X.navOa = () => (isHead()
+  // Onboarding (OA): the Admin is the same admin in the other section (the prototype's words). The
+  // Head of AM's own account holds what an account manager holds there (permissions.js).
+  X.navOa = () => (X.me.role === 'ADMIN'
     ? CTL.navTo('target', 'Onboarding (OA)', '/oa#/a/ops')
     : CTL.navOff('target', 'Onboarding (OA)', CTL.WHY.amOnboarding, '<span class="chip" style="margin-left:auto">read</span>'));
+  // Platform Settings (MDM connector, people on MDM, accounts): the Administrator's (integrations.manage).
+  X.navSettings = () => (X.grants['integrations.manage'] === true
+    ? CTL.navTo('cog', 'Platform Settings', '/integrations')
+    : CTL.navOff('cog', 'Platform Settings', denied()));
   // "Open in OmniDesk": the same conversation in the Monitor, for the Head of AM.
   X.omniBtn = (id) => (isHead()
     ? `<button class="btn btn-ghost btn-sm" onclick="MDM.openMonitor('${id}')">${ic('link', 12)} Open in OmniDesk</button>`
@@ -675,7 +681,7 @@
   async function boot() {
     const me = await API.me();
     X.me = me.user; X.grants = me.grants;
-    if (!['ACCOUNT_MANAGER', 'ADMIN'].includes(me.user.role)) { location.href = '/oa'; return; }
+    if (!['ACCOUNT_MANAGER', 'HEAD_OF_AM', 'ADMIN'].includes(me.user.role)) { location.href = '/oa'; return; }
     ME = me.user.id; // eslint-disable-line no-global-assign
     S.role = me.user.role === 'ACCOUNT_MANAGER' ? 'am' : 'admin';
     bookViews();

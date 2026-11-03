@@ -7,6 +7,7 @@ import { logEvent } from '../services/audit.js';
 import { notifyRole } from '../core/notifications.js';
 import { computeHealth } from './health.js';
 import { deriveStage } from './lifecycle.js';
+import { AM_ADMINS } from '../auth/scope.js';
 
 const startOfUtcDay = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 
@@ -32,7 +33,7 @@ export async function recomputeAll({ db = prisma, config: c, now = new Date(), h
     await inTx(db, async (tx) => {
       await tx.seller.updateMany({ where: { joinStatus: 'accepted' }, data: { healthStale: true } });
       await logEvent({ entityType: 'system', entityId: 'am.recompute', action: 'health.recompute_failed', reason: err.message }, tx);
-      await notifyRole('ADMIN', { kind: 'am.recompute_failed', title: 'Health recompute failed — scores are stale', body: err.message, dedupeKey: `am.recompute_failed:${startOfUtcDay(now).toISOString()}` }, tx);
+      await notifyRole(AM_ADMINS, { kind: 'am.recompute_failed', title: 'Health recompute failed — scores are stale', body: err.message, dedupeKey: `am.recompute_failed:${startOfUtcDay(now).toISOString()}` }, tx);
     });
     throw err;
   }

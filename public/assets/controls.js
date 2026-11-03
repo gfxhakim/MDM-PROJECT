@@ -34,7 +34,7 @@
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   // The server's own wording for a role without a grant (src/auth/scope.js denialReason).
-  const ROLE_LABEL = { OA_AGENT: 'Onboarding Agent', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', ADMIN: 'Admin', ACCOUNT_MANAGER: 'Account Manager', READ_ONLY: 'Read-only' };
+  const ROLE_LABEL = { OA_AGENT: 'Onboarding Agent', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', ADMIN: 'Admin', ACCOUNT_MANAGER: 'Account Manager', HEAD_OF_AM: 'Head of AM', READ_ONLY: 'Read-only' };
 
   // The reason written under each control that is greyed out. One place, so both consoles say the
   // same thing and the Arabic dictionary has one entry per sentence.

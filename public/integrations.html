@@ -139,7 +139,7 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
 
   <section class="card" id="accounts">
     <h2>Accounts in this app</h2>
-    <p>Everyone who can sign in. An account imported from MDM signs in with its MDM username and password (checked with MDM each time); a password set here also works. Switching an account off sends its open leads to the holding queue and its sellers to the same-market, smallest-book manager, each change audited. Removing an account does the same and takes it off every list; it can be put back.</p>
+    <p>Everyone who can sign in. An account imported from MDM signs in with its MDM username and password (checked with MDM each time); a password set here also works. Switching an account off sends its open leads to the holding queue and its sellers to the same-market, smallest-book manager, each change audited. Removing an account does the same and takes it off every list; it can be put back. Changing an account's role changes what it can open on its next click; work its old role held is handed on the same way.</p>
     <div class="row"><label class="muted" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="acRemoved"> <span>Show removed accounts</span></label></div>
     <div id="acMsg"></div>
     <div class="scroll" style="max-height:480px"><table><thead><tr><th>Name</th><th>Sign-in</th><th>Role · markets</th><th>From</th><th>Work</th><th>Status</th><th></th></tr></thead><tbody id="acRows"><tr><td class="muted">Loading…</td></tr></tbody></table></div>
@@ -637,9 +637,19 @@ async function decideStaff(action) {
 }
 
 // ───────── Accounts: everyone who can sign in ─────────
-const ac = { data: null, loadedAt: 0, showRemoved: false };
-const ROLE_LABEL = { OA_AGENT: 'Onboarding agent', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', ADMIN: 'Administrator', ACCOUNT_MANAGER: 'Account manager', READ_ONLY: 'Read-only' };
-const showAcErr = (e) => { document.getElementById('acMsg').innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; };
+const ac = { data: null, loadedAt: 0, showRemoved: false, editing: null };
+const ROLE_LABEL = { OA_AGENT: 'Onboarding agent', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', ADMIN: 'Administrator', ACCOUNT_MANAGER: 'Account manager', HEAD_OF_AM: 'Head of AM', READ_ONLY: 'Read-only' };
+// What each role opens, shown under the role picker (OA Part 9 / Appendix A, AM 9.1 / Appendix A).
+const ROLE_REACH = {
+  OA_AGENT: 'Onboarding console: their own leads (reads the team queue). Gets new leads by capacity in the markets ticked.',
+  SHIFT_LEAD: 'Onboarding console: the team queue and the floor view; takes over with a reason.',
+  MANAGER: 'Onboarding console: every lead, the dashboards and the onboarding settings.',
+  ADMIN: 'Everything: both consoles, settings, integrations, accounts and the audit log.',
+  ACCOUNT_MANAGER: 'Account manager console: only their own book of sellers. Gets new sellers in the markets ticked.',
+  HEAD_OF_AM: 'Account manager console for every seller: reassigns, bulk tasks, the AM settings and the AM part of the audit log. No onboarding console, no Platform Settings.',
+  READ_ONLY: 'Onboarding console, read-only: lists and dashboards, no changes.',
+};
+const showAcErr = (e) => { const el = document.getElementById('acMsg'); el.innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; I18N.apply(el); };
 
 async function loadAccounts() {
   ac.data = await API.get('/api/admin/users' + (ac.showRemoved ? '?removed=true' : ''));
@@ -649,6 +659,10 @@ async function loadAccounts() {
 
 function renderAccounts() {
   const rows = ac.data; if (!rows) return;
+  // a refresh while the role editor is open keeps what was typed in it
+  const kept = ac.editing && document.getElementById('acNewRole')
+    ? { role: document.getElementById('acNewRole').value, reason: document.getElementById('acReason').value,
+      markets: [...document.querySelectorAll('#acMarkets input:checked')].map((b) => b.value) } : null;
   document.getElementById('acRows').innerHTML = rows.map((u) => {
     const demo = /@mdm\.local$/.test(u.email);
     const signin = `<span data-i18n="off">${esc(u.email)}</span>${u.mdmUsernames.length && !(u.mdmUsernames.length === 1 && u.mdmUsernames[0] === u.email) ? `<br><span class="muted">MDM username:</span> <span data-i18n="off">${esc(u.mdmUsernames.join(', '))}</span>` : ''}`
@@ -659,16 +673,62 @@ function renderAccounts() {
     const actions = u.removedAt ? `<button class="btn" data-act="restore" data-id="${u.id}">Put back</button>`
       : `<button class="btn" data-act="password" data-id="${u.id}">Set password</button> `
         + (u.active ? `<button class="btn" data-act="off" data-id="${u.id}">Switch off</button>` : `<button class="btn" data-act="on" data-id="${u.id}">Switch on</button>`)
+        + ` <button class="btn" data-act="role" data-id="${u.id}">Change role</button>`
         + ` <button class="btn danger" data-act="remove" data-id="${u.id}">Remove</button>`;
-    return `<tr><td><b data-i18n="off">${esc(u.name)}</b></td><td>${signin}</td><td><span>${esc(ROLE_LABEL[u.role] || u.role)}</span><br><span class="muted">${u.markets.map((m) => `<span>${esc(MARKET_NAME[m] || m)}</span>`).join(', ') || '—'}</span></td><td>${from}</td><td>${work}</td><td>${status}</td><td style="white-space:nowrap">${actions}</td></tr>`;
+    const row = `<tr><td><b data-i18n="off">${esc(u.name)}</b></td><td>${signin}</td><td><span>${esc(ROLE_LABEL[u.role] || u.role)}</span><br><span class="muted">${u.markets.map((m) => `<span>${esc(MARKET_NAME[m] || m)}</span>`).join(', ') || '—'}</span></td><td>${from}</td><td>${work}</td><td>${status}</td><td style="white-space:nowrap">${actions}</td></tr>`;
+    return row + (ac.editing === u.id && !u.removedAt ? roleEditor(u, kept) : '');
   }).join('') || '<tr><td colspan="7" class="muted">No accounts.</td></tr>';
-  for (const b of document.querySelectorAll('#acRows button')) b.onclick = () => accountAction(b.dataset.act, b.dataset.id);
+  for (const b of document.querySelectorAll('#acRows button[data-act]')) b.onclick = () => accountAction(b.dataset.act, b.dataset.id);
+  const editing = ac.editing && rows.find((x) => x.id === ac.editing);
+  if (editing) {
+    const sel = document.getElementById('acNewRole');
+    const note = () => { document.getElementById('acRoleNote').innerHTML = roleNote(editing, sel.value); I18N.apply(document.getElementById('acRoleNote')); };
+    sel.onchange = note; note();
+    document.getElementById('acRoleCancel').onclick = () => { ac.editing = null; renderAccounts(); };
+    document.getElementById('acRoleSave').onclick = () => saveRole(editing);
+  }
   I18N.apply(document.getElementById('accounts'));
+}
+
+// The inline "Change role" editor under an account's row: the new role, its markets, a written reason.
+function roleEditor(u, kept) {
+  const role = kept?.role || Object.keys(ROLE_LABEL).find((r) => r !== u.role);
+  const markets = kept ? kept.markets : u.markets;
+  return `<tr class="acEdit"><td colspan="7"><div class="row">
+    <label>New role <select id="acNewRole">${Object.entries(ROLE_LABEL).filter(([r]) => r !== u.role).map(([r, l]) => `<option value="${r}" ${r === role ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+    <label>Markets <span id="acMarkets">${Object.entries(MARKET_NAME).map(([k, l]) => `<label class="chk"><input type="checkbox" value="${k}" ${markets.includes(k) ? 'checked' : ''}> <span>${l}</span></label>`).join('')}</span></label>
+  </div><div id="acRoleNote"></div><div class="row">
+    <input type="text" id="acReason" style="flex:1 1 300px" placeholder="Reason (written to the audit log)" value="${esc(kept?.reason || '')}">
+    <button class="btn primary" id="acRoleSave">Change role</button> <button class="btn" id="acRoleCancel">Cancel</button>
+  </div></td></tr>`;
+}
+
+function roleNote(u, role) {
+  const lines = [`<span>${esc(ROLE_REACH[role] || '')}</span>`];
+  if (u.role === 'OA_AGENT' && role !== 'OA_AGENT' && u.openLeads) lines.push(`<span>${esc(I18N.t(`Their ${u.openLeads} open leads go to the holding queue and are assigned again by capacity.`))}</span>`);
+  if (u.role === 'ACCOUNT_MANAGER' && role !== 'ACCOUNT_MANAGER' && u.bookSize) lines.push(`<span>${esc(I18N.t(`Their ${u.bookSize} sellers go to the manager MDM names for them, or the same-market, smallest-book manager, or stay unassigned with you alerted.`))}</span>`);
+  lines.push('<span>The new role applies on their next click.</span>');
+  return `<p class="muted">${lines.join(' ')}</p>`;
+}
+
+async function saveRole(u) {
+  const role = document.getElementById('acNewRole').value;
+  const markets = [...document.querySelectorAll('#acMarkets input:checked')].map((b) => b.value);
+  const reason = document.getElementById('acReason').value.trim();
+  const t = I18N.t;
+  if (!reason) { showAcErr(new Error(t('A written reason is required.'))); return; }
+  try {
+    const r = await API.post(`/api/admin/users/${u.id}/role`, { role, markets, reason });
+    ac.editing = null;
+    document.getElementById('acMsg').innerHTML = `<div class="msg on"><span>${esc(t(`${u.name} is now ${ROLE_LABEL[r.role]}.`))}</span>${r.leadsHeld || r.sellersMoved || r.sellersUnassigned ? ` <span>${esc(t(`${r.leadsHeld} leads to the holding queue, ${r.sellersMoved} sellers moved, ${r.sellersUnassigned} sellers left unassigned.`))}</span>` : ''}</div>`;
+    ac.loadedAt = 0; st.loadedAt = 0; await load();
+  } catch (e) { showAcErr(e); }
 }
 
 async function accountAction(act, id) {
   const u = ac.data.find((x) => x.id === id); if (!u) return;
   const t = I18N.t;
+  if (act === 'role') { ac.editing = ac.editing === id ? null : id; document.getElementById('acMsg').innerHTML = ''; renderAccounts(); return; }
   try {
     if (act === 'password') {
       const pw = prompt(`${t('New password for')} ${u.name} ${t('(at least 8 characters). It is stored hashed and never shown again.')}`);

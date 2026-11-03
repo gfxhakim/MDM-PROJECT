@@ -16,7 +16,7 @@ import { marketCode } from './mdm-api.js';
 import { MARKETS, MARKET_NAMES } from './mdm-skipped.js';
 
 export const IMPORT_ROLES = {
-  OA_AGENT: 'Onboarding agent', ACCOUNT_MANAGER: 'Account manager', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', READ_ONLY: 'Read-only', ADMIN: 'Administrator',
+  OA_AGENT: 'Onboarding agent', ACCOUNT_MANAGER: 'Account manager', HEAD_OF_AM: 'Head of AM', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', READ_ONLY: 'Read-only', ADMIN: 'Administrator',
 };
 export const ACTIONS = ['import', 'leave_out', 'reopen'];
 export const MAX_ITEMS = 200; // the ceiling every bulk run here uses (OA 13.2)
@@ -27,6 +27,7 @@ const parse = (s, fallback) => { try { return JSON.parse(s) ?? fallback; } catch
 /** A guess from what MDM calls the user — shown as the default choice, never applied by itself. */
 export function suggestRole(role, scope) {
   const r = String(role ?? '').toLowerCase();
+  if (/(head|director|chief|lead)\W*(of\W*)?(the\W*)?(account|\bam\b|key.?account)|(account.?manag\w*|\bam\b)\W*(head|director|chief|lead)/.test(r)) return 'HEAD_OF_AM';
   if (/account.?manager|key.?account|\bam\b/.test(r)) return 'ACCOUNT_MANAGER';
   if (/admin|owner|super/.test(r)) return 'ADMIN';
   if (/shift|supervisor|team.?lead|chef/.test(r)) return 'SHIFT_LEAD';
@@ -295,7 +296,7 @@ export async function decideStaff(user, { ids, action, role = null, markets = nu
       const own = markets ?? parse(h.markets, []);
       const needsMarket = ['OA_AGENT', 'ACCOUNT_MANAGER', 'SHIFT_LEAD', 'MANAGER'].includes(role);
       if (needsMarket && !own.length) throw new Error('No market in Libya, Iraq or Lebanon on MDM — choose the markets for this person.');
-      const marketsHere = own.length ? own : role === 'ADMIN' ? [...MARKETS] : [];
+      const marketsHere = own.length ? own : ['ADMIN', 'HEAD_OF_AM'].includes(role) ? [...MARKETS] : [];
       const common = { mdmRef: h.mdmRef, mdmRole: h.role, mdmScope: h.scope, mdmUsernames: h.usernames, mdmManagerRef: h.managerRef, phones: h.phones, mdmSyncedAt: now };
       let account = await db.user.findUnique({ where: { email: h.email } });
       let linked = false;

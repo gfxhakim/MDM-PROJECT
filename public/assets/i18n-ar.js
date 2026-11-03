@@ -2213,3 +2213,34 @@ Object.assign(window.I18N_AR, {
     if (window.I18N_AR[k]) add(window.I18N_AR_TEMPLATES, { [`${k} {n}`]: `${window.I18N_AR[k]} {n}` });
   }
 })();
+// Head of AM as its own account + "Change role" on the Accounts page
+(function () {
+  const add = (dict, entries) => { for (const [k, v] of Object.entries(entries)) dict[k] = v; };
+  add(window.I18N_AR, {
+    'Not available to the Head of AM role.': 'غير متاح لدور رئيس إدارة الحسابات.',
+    'Change role': 'تغيير الدور', 'New role': 'الدور الجديد', 'Head of AM': 'رئيس إدارة الحسابات',
+    'The new role applies on their next click.': 'يسري الدور الجديد عند نقرتهم التالية.',
+    'You cannot change your own role.': 'لا يمكنك تغيير دورك بنفسك.',
+    'This account was removed. Put it back first.': 'هذا الحساب أُزيل. أرجعه أولًا.',
+    'This is the last active Administrator — changing its role would lock everyone out.': 'هذا آخر مسؤول نشط — تغيير دوره سيمنع الجميع من الإدارة.',
+    'Onboarding console: their own leads (reads the team queue). Gets new leads by capacity in the markets ticked.': 'لوحة الإعداد: عملاؤهم المحتملون فقط (مع قراءة طابور الفريق). يتلقّون عملاء جددًا حسب السعة في الأسواق المحدّدة.',
+    'Onboarding console: the team queue and the floor view; takes over with a reason.': 'لوحة الإعداد: طابور الفريق وعرض القاعة؛ يتولّى المحادثة مع ذكر السبب.',
+    'Onboarding console: every lead, the dashboards and the onboarding settings.': 'لوحة الإعداد: كل العملاء المحتملين ولوحات المؤشرات وإعدادات الإعداد.',
+    'Everything: both consoles, settings, integrations, accounts and the audit log.': 'كل شيء: اللوحتان والإعدادات والتكاملات والحسابات وسجل التدقيق.',
+    'Account manager console: only their own book of sellers. Gets new sellers in the markets ticked.': 'لوحة مدير الحسابات: دفتر بائعيهم فقط. يتلقّون بائعين جددًا في الأسواق المحدّدة.',
+    'Account manager console for every seller: reassigns, bulk tasks, the AM settings and the AM part of the audit log. No onboarding console, no Platform Settings.': 'لوحة مدير الحسابات لكل البائعين: إعادة الإسناد والمهام الجماعية وإعدادات إدارة الحسابات وجزء إدارة الحسابات من سجل التدقيق. بلا لوحة الإعداد وبلا إعدادات المنصة.',
+    'Onboarding console, read-only: lists and dashboards, no changes.': 'لوحة الإعداد للقراءة فقط: القوائم ولوحات المؤشرات، بلا تغييرات.',
+    'Everyone who can sign in. An account imported from MDM signs in with its MDM username and password (checked with MDM each time); a password set here also works. Switching an account off sends its open leads to the holding queue and its sellers to the same-market, smallest-book manager, each change audited. Removing an account does the same and takes it off every list; it can be put back. Changing an account\'s role changes what it can open on its next click; work its old role held is handed on the same way.':
+      'كل من يمكنه تسجيل الدخول. الحساب المستورد من MDM يسجّل الدخول باسم المستخدم وكلمة المرور على MDM (يتحقق منهما MDM في كل مرة)؛ وكلمة المرور المعيّنة هنا تعمل أيضًا. إيقاف الحساب يرسل عملاءه المحتملين المفتوحين إلى طابور الانتظار وبائعيه إلى مدير السوق نفسه صاحب أصغر دفتر، وكل تغيير يُدقَّق. إزالة الحساب تفعل الشيء نفسه وتُخرجه من كل القوائم؛ ويمكن إرجاعه. تغيير دور الحساب يغيّر ما يستطيع فتحه عند نقرته التالية؛ والعمل الذي كان يحمله دوره القديم يُسلَّم بالطريقة نفسها.',
+  });
+  add(window.I18N_AR_TEMPLATES, {
+    'Their {n} open leads go to the holding queue and are assigned again by capacity.': 'عملاؤهم المحتملون المفتوحون ({n}) ينتقلون إلى طابور الانتظار ويُسنَدون من جديد حسب السعة.',
+    'Their {n} sellers go to the manager MDM names for them, or the same-market, smallest-book manager, or stay unassigned with you alerted.': 'بائعوهم ({n}) يذهبون إلى المدير الذي يسمّيه MDM، أو إلى مدير السوق نفسه صاحب أصغر دفتر، أو يبقون دون مدير مع تنبيهك.',
+  });
+  const ROLE_AR = { 'Onboarding agent': 'وكيل إعداد', 'Shift lead': 'قائد وردية', 'Manager': 'مدير', 'Administrator': 'مسؤول', 'Account manager': 'مدير حسابات', 'Head of AM': 'رئيس إدارة الحسابات', 'Read-only': 'قراءة فقط' };
+  window.I18N_AR_PATTERNS = (window.I18N_AR_PATTERNS || []).concat([
+    [/^(.+) is now (Onboarding agent|Shift lead|Manager|Administrator|Account manager|Head of AM|Read-only)\.$/, (_, n, r) => `${n} أصبح الآن ${ROLE_AR[r]}.`],
+    [/^A (Onboarding agent|Account manager) is matched to work by market — tick at least one market\.$/, (_, r) => `${ROLE_AR[r]} يُسنَد إليه العمل حسب السوق — حدّد سوقًا واحدًا على الأقل.`],
+    [/^This account is already (.+)\.$/, (_, r) => `هذا الحساب ${ROLE_AR[r] || r} أصلًا.`],
+  ]);
+})();

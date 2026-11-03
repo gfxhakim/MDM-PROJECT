@@ -16,6 +16,7 @@ import { daysInactive, orderWindows } from './health.js';
 import { recomputeAll } from './recompute.js';
 import { cadenceDays, taskMinutes } from './capacity.js';
 import { STEPS } from './playbook.js';
+import { AM_ADMINS } from '../auth/scope.js';
 
 const DAY = 86_400_000;
 const CALL_TYPES = ['intervention', 'save', 'checkin'];
@@ -103,7 +104,7 @@ export async function runAmSweep({ db = prisma, config, now = new Date(), recomp
       const checkin = tasks.find((t) => t.taskType === 'checkin' && ['r4', 'r13'].includes(t.ruleId));
       if (checkin && !hasRule('r5')) await upgrade(checkin, { ruleId: 'r5', taskType: 'save', priority: 'urgent', why, alertKey: 'SELLER_INACTIVE' });
       else if (!hasCall() && await open('r5', { taskType: 'save', priority: 'urgent', dueIn: 0, title: 'Save campaign', why, alertKey: 'SELLER_INACTIVE' })) {
-        await notifyRole('ADMIN', { kind: 'am.r5.save', title: `Save campaign opened: ${s.contact.name}`, body: why, dedupeKey: `am.r5:${s.id}:${today.toISOString()}` }, db);
+        await notifyRole(AM_ADMINS, { kind: 'am.r5.save', title: `Save campaign opened: ${s.contact.name}`, body: why, dedupeKey: `am.r5:${s.id}:${today.toISOString()}` }, db);
       }
     }
     // r2 — health critical (upgrade an open r13 check-in in place)

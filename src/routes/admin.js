@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { ah, badRequest } from '../http/errors.js';
 import { requirePermission } from '../auth/middleware.js';
 import { grantElevation, listElevations, revokeElevation } from '../auth/elevation.js';
-import { listUsers, removeUser, restoreUser, setActive, setPassword } from '../auth/users.js';
+import { changeRole, listUsers, removeUser, restoreUser, setActive, setPassword } from '../auth/users.js';
 import { deleteRecords, listDeleted, restoreDeleted } from '../core/deletion.js';
 import { dateRange } from '../http/range.js';
 import { prisma } from '../db.js';
@@ -30,6 +30,20 @@ adminRouter.delete('/elevations/:id', requirePermission('roles.manage'), ah(asyn
   res.json(await revokeElevation({ actor: req.user, elevationId: req.params.id, reason: req.body?.reason }));
 }));
 
+// The Head of AM reads the account-management part of the trail (AM 9.5: configuration publish and
+// rollback, reassignment, escalation, conversation take-over, block requests, bulk task creation),
+// plus everything else written about sellers, their tasks, playbooks and health.
+async function amTrail() {
+  const sellerContacts = (await prisma.seller.findMany({ select: { contactId: true } })).map((s) => s.contactId);
+  return { OR: [
+    { entityType: 'seller' }, { action: { startsWith: 'am' } }, { action: { startsWith: 'seller.' } }, { action: { startsWith: 'playbook.' } },
+    { action: { startsWith: 'health.' } }, { action: { in: ['bulk.am_task_create', 'bulk.seller_reassign'] } }, { action: { startsWith: 'config.' } },
+    { action: { startsWith: 'conversation.' } },
+    // block requests: on sellers' contacts only (a lead's block is the onboarding team's)
+    { entityType: 'contact', entityId: { in: sellerContacts }, action: { contains: 'block' } },
+  ] };
+}
+
 // Read-only view of the single immutable log. No write or delete route exists.
 adminRouter.get('/audit', requirePermission('audit.view'), ah(async (req, res) => {
   const { entityType, entityId, action, actorId } = req.query;
@@ -38,6 +52,7 @@ adminRouter.get('/audit', requirePermission('audit.view'), ah(async (req, res) =
   if (req.query.actor === 'system') where.actorId = null; // rules and the sync
   const { from, to } = dateRange(req.query);
   if (from || to) where.createdAt = { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) };
+  if (req.user.role === 'HEAD_OF_AM') where.AND = [await amTrail()];
   const rows = await prisma.eventLog.findMany({ where, orderBy: { createdAt: 'desc' }, take });
   res.json(rows.map((r) => ({ ...r, before: r.before && JSON.parse(r.before), after: r.after && JSON.parse(r.after) })));
 }));
@@ -64,6 +79,11 @@ adminRouter.post('/users/:id/password', requirePermission('roles.manage'), ah(as
 
 // { active: false, reason } switches an account off — its open leads go to the holding queue and
 // its sellers to the same-market, smallest-book manager; { active: true, reason } switches it on.
+// { role, reason, markets? } — another role for an account; its old work is handed on as when switched off.
+adminRouter.post('/users/:id/role', requirePermission('roles.manage'), ah(async (req, res) => {
+  res.json(await changeRole(req.user, req.params.id, req.body?.role, req.body?.reason, req.body?.markets));
+}));
+
 adminRouter.post('/users/:id/active', requirePermission('roles.manage'), ah(async (req, res) => {
   res.json(await setActive(req.user, req.params.id, req.body?.active === true, req.body?.reason));
 }));

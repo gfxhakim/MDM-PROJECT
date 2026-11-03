@@ -16,7 +16,7 @@
 //   'approval'    may request; executes once a holder approves
 //   'take_over'   only after taking the conversation over (Admin monitoring)
 
-export const ROLES = ['OA_AGENT', 'SHIFT_LEAD', 'MANAGER', 'ADMIN', 'ACCOUNT_MANAGER', 'READ_ONLY'];
+export const ROLES = ['OA_AGENT', 'SHIFT_LEAD', 'MANAGER', 'ADMIN', 'ACCOUNT_MANAGER', 'HEAD_OF_AM', 'READ_ONLY'];
 
 const R = (OA_AGENT, SHIFT_LEAD, MANAGER, ADMIN, ACCOUNT_MANAGER, READ_ONLY) =>
   ({ OA_AGENT, SHIFT_LEAD, MANAGER, ADMIN, ACCOUNT_MANAGER, READ_ONLY });
@@ -79,6 +79,20 @@ const AM = {
   'am.rule_sweep':                R(false, false, false, true, false, false),
   // Financial writes, seller accept/reject in the AM module, parcel/fulfilment writes: no role, ever.
 };
+
+// ─────────── Head of AM ───────────
+// The AM module's Administrator (AM 9.1: "every seller, every account manager, the configuration
+// surface, the audit trail, and conversation monitoring"; the AM prototype's role switch calls it
+// "Head of AM", its role card "Head of Account Management"), as an account of its own. Scoped to the
+// account-management team the way OA 9.2 scopes the Onboarding Administrator to the onboarding team:
+//  - account management: exactly the Admin column of AM Appendix A;
+//  - onboarding: exactly what an account manager holds (the merchants they own), so the onboarding
+//    workspace stays the onboarding team's;
+//  - the audit trail: its account-management part (routes/admin.js);
+//  - platform settings (MDM connector, accounts, people on MDM) and deleting merchants stay the Admin's.
+for (const row of Object.values(OA)) row.HEAD_OF_AM = row.ACCOUNT_MANAGER;
+for (const row of Object.values(AM)) row.HEAD_OF_AM = row.ADMIN;
+OA['audit.view'].HEAD_OF_AM = true;
 
 export const MATRIX = Object.freeze({ ...OA, ...AM });
 

@@ -10,8 +10,11 @@ import { notFound } from '../http/errors.js';
 
 const ROLE_LABEL = {
   OA_AGENT: 'Onboarding Agent', SHIFT_LEAD: 'Shift lead', MANAGER: 'Manager', ADMIN: 'Admin',
-  ACCOUNT_MANAGER: 'Account Manager', READ_ONLY: 'Read-only',
+  ACCOUNT_MANAGER: 'Account Manager', HEAD_OF_AM: 'Head of AM', READ_ONLY: 'Read-only',
 };
+
+/** The roles that run the account-management module as its Administrator (AM 9.1). */
+export const AM_ADMINS = ['ADMIN', 'HEAD_OF_AM'];
 
 /** The sentence a disabled control shows (Principle 6: disabled controls state their reason). */
 export function denialReason(user, permission, g = grant(user.role, permission)) {
