@@ -71,6 +71,20 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
 .tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;background:#F3F4F6;color:var(--ink3)}
 .tag.mdm{background:#EEF2FF;color:#3730A3} .tag.demo{background:var(--warn-bg);color:var(--warn)} .tag.off{background:var(--bad-bg);color:var(--bad)}
 #accounts button.btn{height:28px;padding:0 10px;font-size:12px}
+.rangeRow{display:grid;grid-template-columns:200px 1fr;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.rangeRow:last-of-type{border-bottom:0}
+.rangeRow .lbl{font-weight:600;font-size:13px}
+.rangeRow .lbl small{display:block;font-weight:400;color:var(--muted);font-size:12px}
+.rangeRow .now{font-size:12.5px;color:var(--muted);margin-top:4px}
+@media (max-width:640px){.rangeRow{grid-template-columns:1fr}}
+#deleteAll{border-color:#F3C1BC}
+#deleteAll h2{color:#B42318}
+.counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px}
+.counts div{border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;background:#FAFAFA}
+.counts b{display:block;font-size:18px;font-variant-numeric:tabular-nums}
+.counts span{font-size:12px;color:var(--muted)}
+.keep{font-size:12.5px;color:var(--ok);margin-top:8px}
+button.btn.solid-danger{background:#B42318;border-color:#B42318;color:#fff}
 </style>
 </head>
 <body>
@@ -82,6 +96,15 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
 </header>
 <main>
   <div class="grid" id="status"><div class="card muted">Loading…</div></div>
+
+  <section class="card" id="mdmRange">
+    <h2>What comes in from MDM</h2>
+    <p>Choose which merchants and people the sync brings in, by the date MDM recorded for them: when the seller registered on MDM, when the person was created on MDM. Merchants and people already here keep being updated whatever you choose. A new sellers range makes the next sync read MDM from the beginning.</p>
+    <div class="rangeRow"><div class="lbl">Sellers<small>Registered on MDM</small></div><div><span class="range" id="rgSellers"></span><div class="now" id="rgSellersNow"></div></div></div>
+    <div class="rangeRow"><div class="lbl">People on MDM<small>Created on MDM</small></div><div><span class="range" id="rgPeople"></span><div class="now" id="rgPeopleNow"></div></div></div>
+    <div class="row"><button class="btn primary" id="rgSave" disabled title="Change a range first">Save</button><span class="muted" id="rgNote"></span></div>
+    <div id="rgMsg"></div>
+  </section>
 
   <section class="card" id="skipped">
     <h2>Skipped sellers <span class="pill off" id="skWaiting">0 waiting</span></h2>
@@ -163,6 +186,23 @@ input[type=text],input[type=search]{font:inherit;font-size:13px;height:34px;bord
     <div class="scroll" style="max-height:420px"><table><thead id="dlHead"></thead><tbody id="dlRows"><tr><td class="muted">Loading…</td></tr></tbody></table></div>
   </section>
 
+  <section class="card" id="deleteAll">
+    <h2>Delete all data</h2>
+    <p>Deletes, in this app only, every lead and seller with their conversation and messages, onboarding tickets and account-manager tasks, health history and playbook, their notifications, the Skipped sellers list, the People on MDM list and every record kept as MDM sent it. MDM is not touched. Use it to start the import again with the date range you choose above.</p>
+    <div class="counts" id="daCounts"><div class="muted">Loading…</div></div>
+    <p class="keep">Kept: the accounts (everyone keeps signing in), settings, templates, the run history and the audit log, which is never deleted.</p>
+    <div class="toolbar">
+      <div class="row"><label><input type="checkbox" id="daEmptyDeleted"> <span>Also empty the Deleted merchants list</span> <span class="muted" id="daDeletedN"></span></label></div>
+      <p class="muted" style="margin:6px 0 0">Left unticked, the merchants on that list stay out of the sync. Ticked, the sync can bring them back.</p>
+      <div class="row">
+        <input type="text" id="daReason" style="flex:1 1 300px" placeholder="Reason (written to the audit log)">
+        <button class="btn solid-danger" id="daGo">Delete all data</button>
+      </div>
+      <p class="muted" style="margin:8px 0 0">The automatic sync is paused at once, so nothing comes back before you choose. Then press Sync now (it reads MDM from the beginning) or Resume.</p>
+    </div>
+    <div id="daMsg"></div>
+  </section>
+
   <section class="card" id="zoho" hidden>
     <h2>Zoho import</h2>
     <p>Upload a Zoho CRM export (CSV or Excel). Leads go through the normal capture and assignment rules; sellers join the book (owner kept only when they cover the market and have room). Health and lifecycle stage are never imported — they are derived.</p>
@@ -190,12 +230,16 @@ const when = (d) => d ? new Date(d).toLocaleString() : '—';
 const pill = (on, yes = 'Connected', no = 'Not connected') => `<span class="pill ${on ? 'on' : 'off'}">${on ? yes : no}</span>`;
 let state = { status: null, file: null, previewed: false };
 
+// One <span> per part, so each part is translated on its own (Arabic, AC-OA-24).
 function syncText(sm) {
   const skipped = sm.skippedCount ?? sm.skipped?.length ?? 0;
   const errors = sm.errorCount ?? sm.errors?.length ?? 0;
   const read = sm.total ? `${(sm.fetched ?? 0).toLocaleString()} of ${sm.total.toLocaleString()} sellers read` : `${sm.fetched ?? 0} sellers read`;
-  return `${sm.full ? 'full · ' : ''}${read}, ${sm.updated ?? 0} sellers updated, ${sm.leadsUpdated ? `${sm.leadsUpdated} ${sm.leadsUpdated === 1 ? 'lead' : 'leads'} updated, ` : ''}${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`
-    + `${skipped ? `, ${skipped} skipped` : ''}${sm.keptOut ? `, ${sm.keptOut} left out (deleted here)` : ''}${errors ? `, ${errors} errors` : ''}${sm.warningCount ? `, ${sm.warningCount} figures missing` : ''}`;
+  const parts = [read, `${sm.updated ?? 0} sellers updated`, sm.leadsUpdated ? `${sm.leadsUpdated} ${sm.leadsUpdated === 1 ? 'lead' : 'leads'} updated` : null,
+    `${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`, skipped ? `${skipped} skipped` : null, sm.keptOut ? `${sm.keptOut} left out (deleted here)` : null,
+    sm.outOfRange?.sellers ? `${sm.outOfRange.sellers} sellers outside the date range` : null, sm.outOfRange?.people ? `${sm.outOfRange.people} people outside the date range` : null,
+    errors ? `${errors} errors` : null, sm.warningCount ? `${sm.warningCount} figures missing` : null].filter(Boolean);
+  return `${sm.full ? '<span>full</span> · ' : ''}${parts.map((p) => `<span>${p}</span>`).join(', ')}`;
 }
 
 // The run in progress: how far it is, what it is reading now, and the last outcomes as they happen.
@@ -207,12 +251,15 @@ function liveHtml(r) {
   const cls = { seller_created: 'on', lead_created: 'on', updated: 'on', lead_updated: 'on', skipped: 'off', error: 'fail' };
   const rows = (live.recent ?? []).map((e) => `<li><span class="t">${new Date(e.t).toLocaleTimeString()}</span><span class="pill ${cls[e.action] ?? 'off'}">${label[e.action] ?? esc(e.action)}</span>`
     + `<span><b>${esc(e.ref ?? '')}</b> ${esc(e.name ?? '')} — ${esc(e.note ?? '')}</span></li>`).join('');
-  return `<div class="card" style="grid-column:1/-1"><h2>Importing from MDM now <span class="pill off">live</span></h2>`
+  const stopping = state.status?.mdm?.stopping;
+  return `<div class="card" style="grid-column:1/-1"><h2>Importing from MDM now <span class="pill off">live</span>${stopping ? ' <span class="pill fail">stopping</span>' : ''}</h2>`
     + `<div class="bar ${pct == null ? 'indet' : ''}"><div${pct == null ? '' : ` style="width:${pct}%"`}></div></div>`
-    + `<p>${syncText(sm)}${pct == null ? '' : ` (${pct}%)`} · ${mins} min</p>`
+    + `<p>${syncText(sm)}${pct == null ? '' : ` (${pct}%)`} · <span>${mins} min</span></p>`
     + (live.current ? `<p>Reading now: <code>${esc(live.current)}</code></p>` : '')
     + `<ul class="feed">${rows || '<li class="muted">Reading the first sellers…</li>'}</ul>`
-    + `<p class="muted">Updates every 3 seconds. Imported sellers and leads are already in the consoles — reload them to see the new ones.</p></div>`;
+    + `<p class="muted">Updates every 3 seconds. Imported sellers and leads are already in the consoles — reload them to see the new ones.</p>`
+    + `<div class="row"><button class="btn danger" id="stopLive" ${stopping ? 'disabled title="Stopping after the seller it is reading"' : ''}>${stopping ? 'Stopping…' : 'Stop sync'}</button>`
+    + `<span class="muted">${stopping ? 'Stops after the seller it is reading. What was read stays.' : 'Stops after the seller it is reading; what was read stays. The automatic sync is paused until you press Resume.'}</span></div></div>`;
 }
 
 // Why sellers were skipped or failed, grouped by reason, under the run's row.
@@ -238,17 +285,27 @@ function renderStatus() {
   const last = s.mdm.lastSync;
   const wb = s.writeback;
   document.getElementById('zoho').hidden = !s.optional?.zoho;
-  const top = s.runs.find((r) => r.kind === 'mdm_sync');
+  // the live card follows the sync in progress (read on its own by the server), not the newest rows
+  const liveRun = s.mdm.running ? s.live ?? s.runs.find((r) => r.kind === 'mdm_sync' && r.status === 'running') ?? null : null;
+  const stopBtn = `<button class="btn danger" id="stop" ${s.mdm.pull ? (s.mdm.stopping ? 'disabled title="Stopping after the seller it is reading"' : '') : 'disabled title="Set MDM_API_KEY to enable the sync"'}>${s.mdm.stopping ? 'Stopping…' : 'Stop sync'}</button>`;
   document.getElementById('status').innerHTML =
-    (top?.status === 'running' ? liveHtml(top) : '')
+    (liveRun ? liveHtml(liveRun) : '')
     + card(`MDM platform ${pill(s.mdm.pull)}`, [esc(s.mdm.detail),
       `Webhook: ${s.mdm.events ? 'accepted at <code>/api/integrations/mdm/events</code>' : 'off (set MDM_WEBHOOK_SECRET)'}`,
-      `Last sync: ${last ? `${when(last.at)} — ${esc(last.status)}${last.summary ? `, ${syncText(last.summary)}` : ''}` : 'never'}`,
+      last ? `<span>Last sync:</span> <span data-i18n="off">${when(last.at)}</span> — <span>${esc(last.status)}</span>${last.summary ? `, ${syncText(last.summary)}` : ''}` : 'Last sync: never',
+      ...(s.mdm.pull ? [autoLine(s.mdm)] : []),
+      `<span>Brings in:</span> ${rangeText('sellers', s.mdm.sync?.sellers)}<span>;</span> ${rangeText('people', s.mdm.sync?.people)} <a href="#mdmRange" style="color:var(--red);font-weight:600">Change</a>`,
+      ...(s.mdm.sync?.fullNext ? ['<span>The next sync reads MDM from the beginning (the date range changed, or everything was deleted).</span>'] : []),
       s.mdm.skippedWaiting ? `<a href="#skipped" style="color:var(--red);font-weight:600">${s.mdm.skippedWaiting} skipped sellers waiting for your decision</a>` : 'No skipped sellers waiting.',
       s.mdm.staffWaiting ? `<a href="#staff" style="color:var(--red);font-weight:600">${s.mdm.staffWaiting} people on MDM waiting for your decision</a>` : `${s.mdm.staffImported ?? 0} people imported from MDM, none waiting.`,
       ...(last?.summary?.staff?.error ? [`<span class="pill fail">MDM did not let us read its users</span> <span data-i18n="off">${esc(last.summary.staff.error)}</span>`] : [])],
-      `<div class="row"><button class="btn" id="sync" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Sync now</button>`
-      + `<button class="btn" id="full" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Full resync</button></div>`)
+      `<div class="row"><button class="btn" id="sync" ${s.mdm.pull ? (s.mdm.running ? 'disabled title="A sync is running"' : '') : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Sync now</button>`
+      + `<button class="btn" id="full" ${s.mdm.pull ? (s.mdm.running ? 'disabled title="A sync is running"' : '') : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Full resync</button>`
+      // paused: Resume, plus Stop sync while a run (Sync now / Full resync) is in progress
+      + (s.mdm.sync?.paused
+        ? `<button class="btn primary" id="resume" ${s.mdm.pull ? '' : 'disabled title="Set MDM_API_KEY to enable the sync"'}>Resume</button>${s.mdm.running ? stopBtn : ''}`
+        : stopBtn)
+      + `</div>`)
     + card(`Our work recorded on MDM ${pill(wb.on, 'On', 'Off')}`, [esc(wb.detail),
       `Waiting to send: ${wb.pending}`,
       `Last send: ${wb.last ? `${when(wb.last.at)} — ${esc(wb.last.status)}${wb.last.summary?.error ? ` (${esc(wb.last.summary.error)})` : ''}${wb.last.summary?.refused?.length ? `, ${wb.last.summary.refused.length} refused by MDM` : ''}` : 'never'}`],
@@ -267,6 +324,17 @@ function renderStatus() {
   };
   act('sync', '/api/integrations/mdm/sync', {}, 'Syncing…');
   act('full', '/api/integrations/mdm/sync', { full: true }, 'Syncing…');
+  act('resume', '/api/integrations/mdm/resume', {}, 'Resuming…');
+  for (const id of ['stop', 'stopLive']) {
+    const b = document.getElementById(id);
+    if (b) b.onclick = async () => {
+      const t = I18N.t;
+      if (!confirm(s.mdm.running ? t('Stop the sync now? It stops after the seller it is reading; what was read stays. The automatic sync is paused until you press Resume.') : t('Pause the automatic sync? It stays paused until you press Resume. Sync now and Full resync still run once when you press them.'))) return;
+      b.disabled = true; b.textContent = t('Stopping…');
+      try { await API.post('/api/integrations/mdm/stop', {}); } catch (e) { alert(e.message); }
+      await load();
+    };
+  }
   act('push', '/api/integrations/mdm/push', {}, 'Sending…');
   document.getElementById('runs').innerHTML = s.runs.length ? s.runs.map((r) => {
     const sm = r.summary || {};
@@ -275,7 +343,8 @@ function renderStatus() {
       : r.kind === 'mdm_writeback' ? (sm.error ? esc(sm.error) : `${sm.sent ?? 0} recorded on MDM${sm.refused?.length ? `, ${sm.refused.length} refused: ${esc(sm.refused[0].reason)}` : ''}`)
       : syncText(sm);
     const why = r.kind === 'mdm_sync' ? reasonsHtml(sm) : '';
-    return `<tr><td>${when(r.startedAt)}</td><td>${esc(r.kind)}</td><td><span class="pill ${r.status === 'completed' ? 'on' : r.status === 'failed' ? 'fail' : 'off'}">${esc(r.status)}</span></td><td>${text}${why ? `<details><summary style="cursor:pointer;color:var(--red)">Why</summary>${why}</details>` : ''}</td></tr>`;
+    const stopped = r.status === 'stopped' && sm.stopped ? `<br><span class="muted">Stopped</span> <span class="muted" data-i18n="off">${when(sm.stopped.at)}${sm.stopped.by ? ` · ${esc(sm.stopped.by)}` : ''}</span>` : '';
+    return `<tr><td>${when(r.startedAt)}</td><td>${esc(r.kind)}</td><td><span class="pill ${r.status === 'completed' ? 'on' : r.status === 'failed' ? 'fail' : 'off'}">${esc(r.status)}</span></td><td>${text}${stopped}${why ? `<details><summary style="cursor:pointer;color:var(--red)">Why</summary>${why}</details>` : ''}</td></tr>`;
   }).join('') : '<tr><td colspan="4" class="muted">No runs yet.</td></tr>';
 }
 
@@ -760,26 +829,167 @@ async function accountAction(act, id) {
   } catch (e) { showAcErr(e); }
 }
 
+// ───────── What comes in from MDM: a date range for sellers and one for people ─────────
+// The range is kept on the server (Integrations → POST /api/integrations/mdm/range). Dates are the
+// viewer's own calendar days, sent as instants, as on every list's period filter.
+function autoLine(m) {
+  const sy = m.sync || {};
+  if (sy.paused) return `<span class="pill off">Paused</span> <span>Automatic sync paused</span>${sy.pausedBy ? ` <span class="muted">by</span> <span data-i18n="off">${esc(sy.pausedBy)}</span>` : ''}${sy.pausedAt ? ` <span class="muted" data-i18n="off">${when(sy.pausedAt)}</span>` : ''}<span>.</span> <span>Sync now and Full resync still run once when you press them.</span>`;
+  return `<span>${m.every === 1 ? 'Automatic sync every minute.' : `Automatic sync every ${m.every} minutes.`}</span>`;
+}
+const dayText = (iso) => `<span data-i18n="off">${esc(new Date(iso).toLocaleDateString())}</span>`;
+function rangeText(kind, r) {
+  r = r || { mode: 'all' };
+  const sellers = kind === 'sellers';
+  if (r.mode === 'recent') return `<span>${sellers ? `sellers registered in the last ${r.days} days` : `people created in the last ${r.days} days`}</span>`;
+  if (r.mode === 'old') return `<span>${sellers ? 'sellers registered before' : 'people created before'}</span> ${dayText(r.before)}`;
+  if (r.mode === 'custom') return `<span>${sellers ? 'sellers registered' : 'people created'}</span>${r.from ? ` <span>from</span> ${dayText(r.from)}` : ''}${r.to ? ` <span>up to</span> ${dayText(r.to)}` : ''}`;
+  return `<span>${sellers ? 'every seller' : 'everyone'}</span>`;
+}
+const RG_MODES = {
+  sellers: [['all', 'All sellers'], ['recent', 'Recent sellers'], ['old', 'Old sellers'], ['custom', 'Custom dates']],
+  people: [['all', 'Everyone'], ['recent', 'Recent people'], ['old', 'Old people'], ['custom', 'Custom dates']],
+};
+const RG_DAYS = [7, 30, 60, 90, 180, 365];
+const rg = { sellers: null, people: null, saved: null };
+const rgEdit = (r) => { r = r || { mode: 'all' }; return { mode: r.mode, days: r.days ?? 30, before: r.before ? ymd(new Date(r.before)) : '', from: r.from ? ymd(new Date(r.from)) : '', to: r.to ? ymd(new Date(r.to)) : '' }; };
+function rgPayload(x) {
+  if (x.mode === 'recent') return { mode: 'recent', days: Number(x.days) };
+  if (x.mode === 'old') return { mode: 'old', before: x.before ? new Date(x.before + 'T00:00:00').toISOString() : null };
+  if (x.mode === 'custom') return { mode: 'custom', from: x.from ? new Date(x.from + 'T00:00:00').toISOString() : null, to: x.to ? new Date(x.to + 'T23:59:59.999').toISOString() : null };
+  return { mode: 'all' };
+}
+const rgMissing = (x) => (x.mode === 'old' && !x.before) || (x.mode === 'custom' && !x.from && !x.to);
+// a year typed only in part (0002-…) is not a date yet; the server refuses dates outside 2000–2100 too
+const rgBadDay = (d) => !!d && (d < '2000-01-01' || d > '2100-12-31');
+const rgBad = (x) => (x.mode === 'old' && rgBadDay(x.before)) || (x.mode === 'custom' && (rgBadDay(x.from) || rgBadDay(x.to)));
+// a title set again in English must drop the one saved for Arabic, or the first reason sticks
+const setTitle = (el, t) => { el.removeAttribute('data-en-title'); if (t) el.title = t; else el.removeAttribute('title'); };
+const rgChanged = (k) => rg.saved && JSON.stringify(rgPayload(rg[k])) !== JSON.stringify(rgPayload(rgEdit(rg.saved[k])));
+function drawRange(kind) {
+  const el = document.getElementById(kind === 'sellers' ? 'rgSellers' : 'rgPeople');
+  const x = rg[kind]; if (!x) return;
+  const word = kind === 'sellers' ? 'registered' : 'created';
+  el.innerHTML = `<select data-k="mode" aria-label="${kind === 'sellers' ? 'Sellers' : 'People on MDM'}">${RG_MODES[kind].map(([v, l]) => `<option value="${v}" ${x.mode === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
+    + (x.mode === 'recent' ? `<select data-k="days" aria-label="Days">${RG_DAYS.map((n) => `<option value="${n}" ${Number(x.days) === n ? 'selected' : ''}>${esc(`${word === 'registered' ? 'Registered' : 'Created'} in the last ${n} days`)}</option>`).join('')}</select>` : '')
+    + (x.mode === 'old' ? `<span class="muted">${word === 'registered' ? 'Registered before' : 'Created before'}</span><input type="date" data-k="before" value="${esc(x.before)}" aria-label="Before">` : '')
+    + (x.mode === 'custom' ? `<span class="muted">From</span><input type="date" data-k="from" value="${esc(x.from)}" aria-label="From"><span class="muted">–</span><input type="date" data-k="to" value="${esc(x.to)}" aria-label="To">` : '');
+  for (const c of el.querySelectorAll('[data-k]')) c.onchange = () => {
+    x[c.dataset.k] = c.value;
+    // only a new choice in the first list redraws the editor: a date being typed keeps its focus
+    if (c.dataset.k !== 'mode') { rgState(); return; }
+    // a custom range starts as the last 30 days, as on the lists' period filters
+    if (c.value === 'custom' && !x.from && !x.to) { const t = new Date(); const f = new Date(t); f.setDate(f.getDate() - 29); x.from = ymd(f); x.to = ymd(t); }
+    drawRange(kind); rgState();
+  };
+  I18N.apply(el);
+}
+function rgState() {
+  const changed = rgChanged('sellers') || rgChanged('people');
+  const missing = rgMissing(rg.sellers || {}) || rgMissing(rg.people || {});
+  const bad = rgBad(rg.sellers || {}) || rgBad(rg.people || {});
+  const b = document.getElementById('rgSave');
+  b.disabled = !changed || missing || bad;
+  setTitle(b, missing ? 'Choose the date first' : bad ? 'Choose a date between the years 2000 and 2100' : changed ? '' : 'Change a range first');
+  const note = document.getElementById('rgNote');
+  note.innerHTML = changed && rgChanged('sellers') ? '<span>Saving makes the next sync read MDM from the beginning.</span>' : '';
+  I18N.apply(note); I18N.apply(b.parentElement);
+}
+// After a status read: the saved ranges, and the editors reset to them unless being changed.
+function syncRangeUI() {
+  const m = state.status?.mdm; if (!m?.sync) return;
+  const fresh = JSON.stringify({ s: m.sync.sellers, p: m.sync.people });
+  const editing = rg.saved && (rgChanged('sellers') || rgChanged('people'));
+  if (!rg.saved || (!editing && rg.savedKey !== fresh)) { rg.sellers = rgEdit(m.sync.sellers); rg.people = rgEdit(m.sync.people); drawRange('sellers'); drawRange('people'); }
+  rg.saved = { sellers: m.sync.sellers, people: m.sync.people }; rg.savedKey = fresh;
+  document.getElementById('rgSellersNow').innerHTML = `<span>Now:</span> ${rangeText('sellers', m.sync.sellers)}<br><span>${`Registrations older than ${m.leadMaxAgeDays} days that MDM never accepted still go to the Skipped sellers list, not to the leads.`}</span>`;
+  document.getElementById('rgPeopleNow').innerHTML = `<span>Now:</span> ${rangeText('people', m.sync.people)}<br><span>Someone already on the list, or with an account here, is always kept up to date.</span>`;
+  I18N.apply(document.getElementById('mdmRange'));
+  rgState();
+}
+async function saveRange() {
+  const t = I18N.t;
+  const msg = document.getElementById('rgMsg');
+  try {
+    // only the range changed here is sent: the other one stays exactly as saved (whatever this viewer's time zone)
+    const body = {};
+    if (rgChanged('sellers')) body.sellers = rgPayload(rg.sellers);
+    if (rgChanged('people')) body.people = rgPayload(rg.people);
+    const r = await API.post('/api/integrations/mdm/range', body);
+    rg.saved = null;
+    msg.innerHTML = `<div class="msg on"><span>${esc(t('Saved. From the next sync on, only what you chose comes in; merchants and people already here keep being updated.'))}</span>${r.fullNextRun ? ` <span>${esc(t('The next sync reads MDM from the beginning.'))}</span>` : ''}</div>`;
+    I18N.apply(msg);
+    await load();
+  } catch (e) { msg.innerHTML = `<div class="msg fail">${esc(e.message)}</div>`; I18N.apply(msg); }
+}
+
+// ───────── Delete all data: a clean slate, behind a reason and the number typed ─────────
+const da = { data: null, loadedAt: 0 };
+async function loadDeleteAll() {
+  da.data = await API.get('/api/admin/delete-all');
+  da.loadedAt = Date.now();
+  renderDeleteAll();
+}
+function renderDeleteAll() {
+  const d = da.data; if (!d) return;
+  const c = d.counts;
+  const items = [[c.merchants, 'merchants (leads and sellers)'], [c.sellers, 'of them sellers'], [c.onboarding, 'onboarding tickets'], [c.amTasks, 'account-manager tasks'],
+    [c.messages, 'messages'], [c.skipped, 'skipped sellers'], [c.people, 'people on MDM'], [c.records, 'MDM records']];
+  document.getElementById('daCounts').innerHTML = items.map(([n, l]) => `<div><b data-i18n="off">${Number(n).toLocaleString()}</b><span>${esc(l)}</span></div>`).join('');
+  document.getElementById('daDeletedN').textContent = `(${c.deletedList})`;
+  // the status is re-read every few seconds; the counts only every 10 — the newer of the two decides
+  const running = state.status ? !!state.status.mdm?.running : d.syncRunning;
+  const go = document.getElementById('daGo');
+  go.disabled = !!running;
+  setTitle(go, running ? 'A sync is running — press Stop sync and wait until it shows stopped' : '');
+  I18N.apply(document.getElementById('deleteAll'));
+}
+const showDaMsg = (cls, html) => { const el = document.getElementById('daMsg'); el.innerHTML = `<div class="msg ${cls}">${html}</div>`; I18N.apply(el); };
+async function deleteAll() {
+  const t = I18N.t;
+  const reason = document.getElementById('daReason').value.trim();
+  if (!reason) { showDaMsg('off', `<span>${esc(t('Write the reason first.'))}</span>`); return; }
+  try { await loadDeleteAll(); } catch (e) { showDaMsg('fail', esc(e.message)); return; }
+  const n = da.data.confirmWith;
+  const empty = document.getElementById('daEmptyDeleted').checked;
+  const typed = prompt([t(`Delete all data: ${n} merchants and everything listed, in this app only. MDM keeps them.`),
+    t(empty ? 'The Deleted merchants list is emptied too.' : 'The Deleted merchants list is kept.'),
+    t('This cannot be undone. The automatic sync is paused.'), t(`Type ${n} to confirm the delete.`)].join('\n'));
+  if (typed === null) return;
+  if (typed.trim() !== String(n)) { showDaMsg('off', `<span>${esc(t('Not deleted: the number typed did not match.'))}</span>`); return; }
+  const go = document.getElementById('daGo'); go.disabled = true;
+  try {
+    const r = await API.post('/api/admin/delete-all', { reason, confirm: typed.trim(), emptyDeletedList: empty });
+    showDaMsg('on', `<span>${esc(t(`${r.deleted.merchants} merchants deleted, with ${r.deleted.messages} messages, ${r.deleted.skipped} skipped sellers and ${r.deleted.people} people on MDM.`))}</span> <span>${esc(t('One audit entry records this run.'))}</span>`
+      + `<br><span>${esc(t('The automatic sync is paused. Choose the date range above, then press Sync now (it reads MDM from the beginning) or Resume.'))}</span>`);
+    document.getElementById('daReason').value = ''; document.getElementById('daEmptyDeleted').checked = false;
+    sk.loadedAt = 0; st.loadedAt = 0; dl.loadedAt = 0; ac.loadedAt = 0; da.loadedAt = 0;
+    await load();
+    document.getElementById('mdmRange').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) { showDaMsg('fail', esc(e.message)); go.disabled = false; }
+}
+
 let timer = null;
 // While a sync runs, the page re-reads its progress every 3 seconds (and the skipped list every 10).
 function follow() {
   clearTimeout(timer);
-  const top = state.status?.runs?.find((r) => r.kind === 'mdm_sync');
-  if (top?.status === 'running') timer = setTimeout(() => load().catch(follow), 3000);
+  if (state.status?.mdm?.running) timer = setTimeout(() => load().catch(follow), 3000);
 }
 
 async function load() {
   const [status] = await Promise.all([API.get('/api/integrations/status'), Date.now() - sk.loadedAt > 10000 ? loadSkipped().catch(showSkErr) : null,
     Date.now() - st.loadedAt > 10000 ? loadStaff().catch(showStErr) : null, Date.now() - ac.loadedAt > 10000 ? loadAccounts().catch(showAcErr) : null,
-    Date.now() - dl.loadedAt > 10000 ? loadDeleted().catch(showDlErr) : null]);
+    Date.now() - dl.loadedAt > 10000 ? loadDeleted().catch(showDlErr) : null,
+    Date.now() - da.loadedAt > 10000 ? loadDeleteAll().catch((e) => showDaMsg('fail', esc(e.message))) : null]);
   state.status = status;
-  renderStatus(); I18N.apply(document.body);
+  renderStatus(); syncRangeUI(); renderDeleteAll(); I18N.apply(document.body);
   follow();
 }
 
 window.render = function () {
   document.getElementById('lang').innerHTML = I18N.toggleHTML();
-  renderStatus(); renderSkipped(); renderStaff(); renderAccounts(); renderDeleted();
+  renderStatus(); renderSkipped(); renderStaff(); renderAccounts(); renderDeleted(); renderDeleteAll();
+  if (rg.sellers) { drawRange('sellers'); drawRange('people'); } syncRangeUI();
 };
 
 (async () => {
@@ -802,6 +1012,8 @@ window.render = function () {
   mountRange('stRange', 'Created on MDM', st.range, () => { st.selected.clear(); loadStaff().catch(showStErr); });
   mountRange('dlRange', 'Deleted', dl.range, () => { dl.selected.clear(); loadDeleted().catch(showDlErr); });
   document.getElementById('dlRestore').onclick = () => restoreDeleted();
+  document.getElementById('rgSave').onclick = () => saveRange();
+  document.getElementById('daGo').onclick = () => deleteAll();
   document.getElementById('dlKind').onchange = (e) => { dl.kind = e.target.value; dl.selected.clear(); loadDeleted().catch(showDlErr); };
   let dlTimer = null;
   document.getElementById('dlQ').oninput = (e) => { clearTimeout(dlTimer); dlTimer = setTimeout(() => { dl.q = e.target.value.trim(); dl.selected.clear(); loadDeleted().catch(showDlErr); }, 300); };

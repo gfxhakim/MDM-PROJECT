@@ -25,6 +25,7 @@ import { changeTicket } from '../oa/service.js';
 import { addSystemLine } from '../core/conversations.js';
 import { deletedIndex, isKeptOut } from '../core/deletion.js';
 import { keepRecord, readSellerExtras, readStores, recordState } from './mdm-records.js';
+import { SyncStopped, clearStop, getSyncSettings, inRange, stopRequest } from './mdm-control.js';
 
 export const mdmConfig = () => ({
   url: (process.env.MDM_API_URL || 'https://api.mdm.express').replace(/\/$/, ''),
@@ -37,8 +38,15 @@ export const mdmConfig = () => ({
 export async function mdmStatus(db = prisma) {
   const c = mdmConfig();
   const last = await db.integrationRun.findFirst({ where: { kind: 'mdm_sync' }, orderBy: { startedAt: 'desc' } });
+  const settings = await getSyncSettings(db);
   return {
     pull: !!c.apiKey, events: !!c.webhookKey,
+    running: !!running, stopping: !!(running && stopRequest()),
+    every: Number(process.env.MDM_SYNC_MINUTES) || 15, leadMaxAgeDays: c.leadMaxAgeDays,
+    // what comes in (by the date MDM recorded) and whether the automatic sync is paused (mdm-control.js)
+    sync: { sellers: settings.sellers, people: settings.people, paused: !!settings.paused, pausedAt: settings.pausedAt,
+      pausedBy: settings.pausedById ? (await db.user.findUnique({ where: { id: settings.pausedById }, select: { name: true } }))?.name ?? null : null,
+      fullNext: !!settings.fullFrom && !(await db.integrationRun.findFirst({ where: { kind: 'mdm_sync', status: 'completed', startedAt: { gte: new Date(settings.fullFrom) } } })) },
     lastSync: last ? { at: last.finishedAt ?? last.startedAt, status: last.status, summary: JSON.parse(last.summary) } : null,
     skippedWaiting: await db.mdmSkipped.count({ where: { decision: null } }),
     staffWaiting: await db.mdmStaff.count({ where: { decision: null } }),
@@ -58,6 +66,14 @@ async function sellerFor({ mdmRef, sellerRef, phone }, db) {
     if (contact) return db.seller.findUnique({ where: { contactId: contact.id } });
   }
   return null;
+}
+
+/** A platform merchant that is already here, as a seller or as a lead (by MDM id, then phone). */
+async function alreadyHere(row, db) {
+  if (await sellerFor({ mdmRef: row.mdmRef, phone: row.phone }, db).catch(() => null)) return true;
+  if (row.mdmRef && await db.contact.findFirst({ where: { mdmRef: String(row.mdmRef) }, select: { id: true } })) return true;
+  let phone = null; try { phone = row.phone ? normalizePhone(row.phone) : null; } catch { /* no valid phone */ }
+  return !!(phone && await db.contact.findUnique({ where: { phone }, select: { id: true } }));
 }
 
 const MARKETS = ['LY', 'IQ', 'LB'];
@@ -297,15 +313,21 @@ export async function handleMdmEvent(evt, db = prisma) {
  */
 let running = null; // one sync at a time: a press of "Sync now" during the scheduled run is refused
 
-const refuse = () => {
+export const isSyncRunning = () => !!running;
+
+// automatic: the scheduled run (and the one started after placing skipped sellers) — it does not
+// run while an Administrator has paused the sync; Sync now and Full resync always run once.
+const refuse = async ({ automatic = false, db = prisma } = {}) => {
   if (!mdmConfig().apiKey) throw Object.assign(new Error('The MDM platform connector is not configured (MDM_API_KEY).'), { status: 503, code: 'not_configured' });
   if (running) throw Object.assign(new Error('A sync is already running. Wait for it to finish — its progress shows under Recent runs.'), { status: 409, code: 'sync_running' });
+  if (automatic && (await getSyncSettings(db)).paused) throw Object.assign(new Error('The automatic sync is paused. Press Resume, or Sync now to run it once.'), { status: 409, code: 'sync_paused' });
 };
 
 export async function syncSellers(opts = {}) {
-  refuse();
+  await refuse(opts);
+  if (running) return refuse(opts); // another call started while the setting was read
   running = runSync(opts);
-  try { return await running; } finally { running = null; }
+  try { return await running; } finally { running = null; clearStop(); }
 }
 
 /**
@@ -313,7 +335,7 @@ export async function syncSellers(opts = {}) {
  * Recent runs (a full run over thousands of sellers takes long; the outcome is on the run itself).
  */
 export async function startSync(opts = {}) {
-  refuse();
+  await refuse(opts);
   let started; const recorded = new Promise((r) => { started = r; });
   const run = syncSellers({ ...opts, onStarted: started });
   run.catch(() => { /* the failure is written on the run */ });
@@ -341,17 +363,26 @@ function tally(bucket, ref, reason) {
 
 async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = prisma, now = new Date(), onStarted = null } = {}) {
   const c = mdmConfig();
-  const last = full ? null : await db.integrationRun.findFirst({ where: { kind: 'mdm_sync', status: 'completed' }, orderBy: { startedAt: 'desc' } });
+  const settings = await getSyncSettings(db);
+  let last = full ? null : await db.integrationRun.findFirst({ where: { kind: 'mdm_sync', status: 'completed' }, orderBy: { startedAt: 'desc' } });
+  // a new sellers range, or everything deleted here, since the last run: read MDM from the beginning
+  if (last && settings.fullFrom && last.startedAt < new Date(settings.fullFrom)) last = null;
   const api = client({ url: c.url, apiKey: c.apiKey, paymentPassword: c.paymentPassword, fetchImpl });
   const run = await db.integrationRun.create({ data: { kind: 'mdm_sync', status: 'running', actorId } });
   onStarted?.(run.id);
   const summary = { full: !last, total: null, fetched: 0, updated: 0, leadsUpdated: 0, leadsCreated: 0, sellersCreated: 0, skippedCount: 0, errorCount: 0, warningCount: 0,
     reasons: { skipped: {}, errors: {}, warnings: {} }, live: { current: null, recent: [] }, staff: { read: 0, error: null }, aligned: { leads: 0, sellers: 0 },
-    records: { sellers: 0, stores: 0, teamMembers: 0, fees: 0, users: 0 } };
+    records: { sellers: 0, stores: 0, teamMembers: 0, fees: 0, users: 0 },
+    // what this run brought in, by the date MDM recorded; new ones outside it are counted, not brought in
+    range: { sellers: settings.sellers, people: settings.people }, outOfRange: { sellers: 0, people: 0, stores: 0 } };
+  // Stop sync: checked before each record, so the record being read is finished and nothing is left half-written
+  const halt = () => { const s = stopRequest(); if (s) throw new SyncStopped(s); };
   // everything MDM holds for each merchant and person, kept as MDM sends it (mdm-records.js)
   const records = recordState();
+  records.halt = halt;
   const refused = (what, message) => { summary.warningCount++; tally(summary.reasons.warnings, null, `${what}: ${message}`); };
   const done = new Set();
+  const inRefs = new Set(); const outRefs = new Set(); // sellers this run read inside / outside the sellers range
   // Sellers kept aside earlier (waiting, or left out): if one now imports by the normal rules, its row is closed.
   const watched = await watchedRefs(db).catch(() => new Set());
   // The last 20 outcomes, newest first, so the page can show the import while it happens.
@@ -380,7 +411,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
   let savedAt = 0;
   const save = (status) => { savedAt = Date.now(); return db.integrationRun.update({ where: { id: run.id }, data: { status, ...(status === 'running' ? {} : { finishedAt: new Date() }), summary: JSON.stringify(summary) } }); };
   // Progress is written at most every 2 seconds, so the page can follow the run live.
-  const progress = (ref) => { summary.live.current = ref; return Date.now() - savedAt >= 2000 ? save('running') : null; };
+  const progress = (ref) => { halt(); summary.live.current = ref; return Date.now() - savedAt >= 2000 ? save('running') : null; };
   try {
     const since = last?.startedAt ?? null;
     // platform account managers by id → their email, to keep an existing owner who is one of ours
@@ -400,13 +431,23 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
     try {
       const index = await countryIndex(db);
       for await (const u of platformUsers(api)) {
+        halt();
         const row = userToRow(u);
         if (!row.mdmRef) continue;
+        // People range: someone new created on MDM outside it is not listed; people already on the
+        // list, or with an account here (tied to them, or the same email), are always kept up to date
+        if (!inRange(row.createdAt, settings.people, now)
+          && !(await db.mdmStaff.findUnique({ where: { mdmRef: String(row.mdmRef) }, select: { id: true } }))
+          && !(await db.user.findUnique({ where: { mdmRef: String(row.mdmRef) }, select: { id: true } }))
+          && !(row.email && await db.user.findUnique({ where: { email: row.email }, select: { id: true } }))) { summary.outOfRange.people++; continue; }
         await keepRecord('user', row.mdmRef, u, {}, db); summary.records.users++;
         await rememberStaff(row, { runId: run.id, now: new Date(), index, managerRef: row.email ? managers.get(row.email)?.trackingId ?? null : null }, db);
         summary.staff.read++;
       }
-    } catch (err) { summary.staff.error = err.message; summary.warningCount++; tally(summary.reasons.warnings, 'users', `people on MDM: ${err.message}`); }
+    } catch (err) {
+      if (err instanceof SyncStopped) throw err;
+      summary.staff.error = err.message; summary.warningCount++; tally(summary.reasons.warnings, 'users', `people on MDM: ${err.message}`);
+    }
     const ctx = await upsertContext(db); // after the staff step: the agents and managers MDM names may be ours now
     if (!since) summary.total = await api.count(PATHS.sellers).catch(() => null); // how far a full run is
     for await (const s of api.search(PATHS.sellers, { sortBy: { updatedAt: 'DESC' } })) {
@@ -418,6 +459,10 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
       if (!row.mdmRef || done.has(row.mdmRef)) continue;
       done.add(row.mdmRef);
       if (isKeptOut(ctx.deleted, row)) { await record({ ok: false, action: 'kept_out', ref: row.mdmRef, reason: 'Deleted here by an Admin — the sync leaves it out.' }, row); continue; }
+      // Sellers range (registration date on MDM): a merchant not here yet and registered outside it
+      // is not brought in, kept aside or recorded; one already here is updated whatever the range
+      if (!inRange(row.createdAt, settings.sellers, now) && !(await alreadyHere(row, db))) { summary.outOfRange.sellers++; outRefs.add(String(row.mdmRef)); continue; }
+      inRefs.add(String(row.mdmRef));
       try {
         await keepRecord('seller', row.mdmRef, s, {}, db); summary.records.sellers++;
         const known = await sellerFor({ mdmRef: row.mdmRef, phone: row.phone }, db).catch(() => null);
@@ -427,7 +472,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
           metrics = m.metrics; warn(row.mdmRef, m.warnings);
         }
         await record(await upsertFromMdm({ ...row, metrics, managerEmail: platformManagers.get(row.accountManagerRef) ?? null }, ctx, db), row, metrics);
-      } catch (err) { await record({ action: 'error', ref: row.mdmRef, reason: err.message }, row); }
+      } catch (err) { if (err instanceof SyncStopped) throw err; await record({ action: 'error', ref: row.mdmRef, reason: err.message }, row); }
       // the seller's team members and what MDM charges it, per country (a failure here never stops the import)
       try {
         const extras = await readSellerExtras(api, s, row.places, records, refused, db);
@@ -435,9 +480,21 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
       } catch (err) { summary.warningCount++; tally(summary.reasons.warnings, row.mdmRef, `MDM record: ${err.message}`); }
     }
     // every store changed since the last run (all of them on a full run), with the seller it belongs to
-    summary.records.stores = await readStores(api, since, records, refused, db).catch((err) => { refused('stores', err.message); return 0; });
-    const refs = since ? [...await sellersWithOrderChanges(api, since, now)] : [];
+    // Under a sellers range, a store comes in only with a seller that is brought in (read in range
+    // in this run, or already here); the stores of sellers left out by the range are not recorded.
+    const keepStore = async (sellerRef) => {
+      if (settings.sellers.mode === 'all') return true;
+      const ref = sellerRef ? String(sellerRef) : null;
+      if (!ref || outRefs.has(ref)) return false;
+      if (inRefs.has(ref)) return true;
+      if (await db.mdmRecord.findUnique({ where: { kind_mdmRef: { kind: 'seller', mdmRef: ref } }, select: { id: true } })) return true;
+      return alreadyHere({ mdmRef: ref }, db);
+    };
+    const storesLeftOut = () => { summary.outOfRange.stores++; };
+    summary.records.stores = await readStores(api, since, records, refused, db, { keepStore, leftOut: storesLeftOut }).catch((err) => { if (err instanceof SyncStopped) throw err; refused('stores', err.message); return 0; });
+    const refs = since ? [...await sellersWithOrderChanges(api, since, now, halt)] : [];
     for (const ref of refs) {
+      halt();
       if (done.has(ref)) continue;
       done.add(ref);
       const seller = await sellerFor({ mdmRef: ref }, db);
@@ -482,12 +539,19 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
     summary.live.current = null;
     await save('completed');
   } catch (err) {
-    summary.errorCount++; tally(summary.reasons.errors, null, err.message);
     summary.live.current = null;
+    if (err instanceof SyncStopped) {
+      // Stop sync: what was read so far stays; the next run starts from the last completed one
+      summary.stopped = { at: err.by.at, by: err.by.byName };
+      await save('stopped');
+      await logEvent({ actorId: err.by.byId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync_stopped', after: { runId: run.id, fetched: summary.fetched, updated: summary.updated, leadsCreated: summary.leadsCreated, sellersCreated: summary.sellersCreated } }, db);
+      return summary;
+    }
+    summary.errorCount++; tally(summary.reasons.errors, null, err.message);
     await save('failed');
     await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync_failed', reason: err.message }, db);
     throw err;
   }
-  await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync', after: { full: summary.full, fetched: summary.fetched, updated: summary.updated, leadsUpdated: summary.leadsUpdated, leadsCreated: summary.leadsCreated, sellersCreated: summary.sellersCreated, skipped: summary.skippedCount, errors: summary.errorCount } }, db);
+  await logEvent({ actorId, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync', after: { full: summary.full, fetched: summary.fetched, updated: summary.updated, leadsUpdated: summary.leadsUpdated, leadsCreated: summary.leadsCreated, sellersCreated: summary.sellersCreated, skipped: summary.skippedCount, errors: summary.errorCount, outOfRange: summary.outOfRange } }, db);
   return summary;
 }

@@ -13,6 +13,7 @@ import { badRequest, forbidden } from '../http/errors.js';
 import { logEvent } from '../services/audit.js';
 import { grant } from '../auth/permissions.js';
 import { normalizePhone } from './contacts.js';
+import { fullNextRun, setPaused } from '../integrations/mdm-control.js';
 
 export const DELETE_KINDS = { leads: 'lead', sellers: 'seller', skipped: 'skipped' };
 export const MAX_DELETE = 200;
@@ -139,7 +140,8 @@ export async function deleteRecords(user, { kind, ids, reason, keepOut = true } 
 
 /** The deleted merchants, newest first (for the Integrations page). */
 export async function listDeleted({ kind = null, from = null, to = null, q = null, restored = false } = {}, db = prisma) {
-  const where = { ...(restored ? {} : { restoredAt: null }), ...(kind ? { kind } : {}) };
+  // kind "all" is the bookkeeping row of a "Delete all data" run (its template sends): not a merchant
+  const where = { ...(restored ? {} : { restoredAt: null }), kind: kind && kind !== 'all' ? kind : { not: 'all' } };
   if (from || to) where.deletedAt = { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) };
   const s = String(q ?? '').trim();
   if (s) where.OR = [{ name: { contains: s } }, { phone: { contains: s } }, { mdmRef: { contains: s } }];
@@ -149,7 +151,7 @@ export async function listDeleted({ kind = null, from = null, to = null, q = nul
     items: rows.map((r) => ({ id: r.id, kind: r.kind, name: r.name, phone: r.phone, mdmRef: r.mdmRef, reason: r.reason, keepOut: r.keepOut,
       deletedAt: r.deletedAt, deletedBy: r.deletedById ? people.get(r.deletedById) ?? null : null, restoredAt: r.restoredAt, restoredBy: r.restoredById ? people.get(r.restoredById) ?? null : null,
       snapshot: parse(r.snapshot, {}) })),
-    total: await db.deletedMerchant.count({ where: { restoredAt: null } }),
+    total: await db.deletedMerchant.count({ where: { restoredAt: null, kind: { not: 'all' } } }),
     limit: MAX_DELETE,
   };
 }
@@ -164,7 +166,7 @@ export async function restoreDeleted(user, { ids, reason } = {}, db = prisma) {
   const results = [];
   for (const id of [...new Set(ids.map(String))]) {
     const r = await db.deletedMerchant.findUnique({ where: { id } });
-    if (!r) { results.push({ id, ok: false, reason: 'No such deleted record.' }); continue; }
+    if (!r || r.kind === 'all') { results.push({ id, ok: false, reason: 'No such deleted record.' }); continue; }
     if (r.restoredAt) { results.push({ id, ok: false, name: r.name, reason: 'Already restored.' }); continue; }
     await db.deletedMerchant.update({ where: { id }, data: { keepOut: false, restoredAt: now, restoredById: user.id } });
     results.push({ id, ok: true, name: r.name, mdmRef: r.mdmRef, outcome: r.mdmRef ? 'The sync may bring it back (on a Full resync, or when it changes on MDM).' : 'Restored; it was never on MDM, so nothing comes back by itself.' });
@@ -172,4 +174,75 @@ export async function restoreDeleted(user, { ids, reason } = {}, db = prisma) {
   const done = results.filter((x) => x.ok).length;
   await logEvent({ actorId: user.id, entityType: 'bulk', entityId: `restore:${now.toISOString()}`, action: 'records.restored', after: { requested: results.length, done, failed: results.length - done, items: results }, reason: reason.trim() }, db);
   return { requested: results.length, done, failed: results.length - done, results };
+}
+
+// ───────── Delete all data (asked by the client on 4 Nov 2026) ─────────
+// Everything the app holds about merchants and about the people MDM lists, so the import can start
+// again from a clean slate with the date range the Administrator chooses:
+//   deleted — every lead and seller (contact, conversation and messages, onboarding tickets and AM
+//     tasks, health history, playbook progress), their notifications, the Skipped sellers list,
+//     the People on MDM list and every record kept as MDM sent it; optionally the Deleted merchants
+//     list (otherwise those merchants stay out of the sync);
+//   kept — the accounts (who can sign in), settings and configuration versions, templates, macros,
+//     saved views, the run history and the audit log, which is never deleted.
+// MDM is never touched. Template sends that are deleted still count against this month's budget.
+// Guardrails: Administrator only, refused while a sync runs, a written reason, and the number of
+// merchants typed to confirm. The automatic sync is paused, so nothing comes back before the date
+// range is chosen; the next sync reads MDM from the beginning. One audit entry with the full list.
+
+async function allCounts(db) {
+  const [merchants, sellers, onboarding, amTasks, messages, skipped, people, records, deletedList] = await Promise.all([
+    db.contact.count(), db.seller.count(), db.ticket.count({ where: { type: 'onboarding_task' } }), db.ticket.count({ where: { NOT: { type: 'onboarding_task' } } }),
+    db.message.count(), db.mdmSkipped.count(), db.mdmStaff.count(), db.mdmRecord.count(), db.deletedMerchant.count({ where: { kind: { not: 'all' } } }),
+  ]);
+  return { merchants, sellers, onboarding, amTasks, messages, skipped, people, records, deletedList };
+}
+
+/** What "Delete all data" would delete now: the counts, and the number to type to confirm. */
+export async function deleteAllPreview(db = prisma) {
+  const counts = await allCounts(db);
+  return { counts, confirmWith: counts.merchants };
+}
+
+export async function deleteAllData(user, { reason, confirm, emptyDeletedList = false } = {}, { syncRunning = false } = {}, db = prisma) {
+  if (!grant(user.role, 'records.delete')) throw forbidden('Deleting records is reserved to the Administrator.');
+  if (syncRunning) throw Object.assign(badRequest('A sync is running. Press Stop sync, wait until it shows "stopped", then delete.'), { status: 409, code: 'sync_running' });
+  if (typeof reason !== 'string' || !reason.trim()) throw badRequest('A written reason is required to delete.');
+  const counts = await allCounts(db);
+  if (String(confirm ?? '').trim() !== String(counts.merchants)) {
+    throw badRequest(`Not deleted: type ${counts.merchants} — the number of merchants here now — to confirm.`);
+  }
+  const why = reason.trim();
+  const now = new Date();
+  const batchId = `delete:all:${now.toISOString()}`;
+  // nothing comes back before the Administrator has chosen what to bring in
+  await setPaused(user, true, { reason: 'Delete all data' }, db);
+  await fullNextRun(user, db);
+  const merchants = (await db.contact.findMany({ select: { id: true, name: true, phone: true, mdmRef: true, seller: { select: { id: true, mdmRef: true } } } }))
+    .map((c) => ({ contactId: c.id, name: c.name, phone: c.phone, mdmRef: c.mdmRef ?? c.seller?.mdmRef ?? null, seller: !!c.seller }));
+  const sends = (await db.message.findMany({ where: { kind: 'template', direction: 'out' }, select: { createdAt: true, templateKey: true } }))
+    .map((m) => ({ at: m.createdAt.toISOString(), key: m.templateKey }));
+  const listed = emptyDeletedList ? await db.deletedMerchant.findMany({ where: { kind: { not: 'all' } }, select: { id: true, templateSends: true } }) : [];
+  for (const r of listed) sends.push(...parse(r.templateSends, []));
+  await db.$transaction([
+    db.notification.deleteMany(),
+    db.playbookProgress.deleteMany(),
+    db.healthHistory.deleteMany(),
+    db.ticket.deleteMany(),
+    db.seller.deleteMany(),
+    db.message.deleteMany(),
+    db.conversation.deleteMany(),
+    db.contact.deleteMany(),
+    db.mdmSkipped.deleteMany(),
+    db.mdmStaff.deleteMany(),
+    db.mdmRecord.deleteMany(),
+    ...(listed.length ? [db.deletedMerchant.deleteMany({ where: { id: { in: listed.map((r) => r.id) } } })] : []),
+    // the budget keeps counting what was sent (hidden from the Deleted merchants list)
+    ...(sends.length ? [db.deletedMerchant.create({ data: { kind: 'all', name: 'Delete all data', keepOut: false, reason: why, batchId, deletedById: user.id, deletedAt: now,
+      snapshot: JSON.stringify(counts), templateSends: JSON.stringify(sends) } })] : []),
+  ]);
+  const kept = ['accounts', 'settings and configuration', 'templates, macros and saved views', 'run history', 'audit log', ...(emptyDeletedList ? [] : ['Deleted merchants list'])];
+  await logEvent({ actorId: user.id, entityType: 'bulk', entityId: batchId, action: 'records.deleted_all', reason: why,
+    after: { counts: { ...counts, deletedList: emptyDeletedList ? counts.deletedList : 0 }, kept, syncPaused: true, fullNextRun: true, merchants } }, db);
+  return { batchId, deleted: { ...counts, deletedList: emptyDeletedList ? counts.deletedList : 0 }, kept, syncPaused: true };
 }

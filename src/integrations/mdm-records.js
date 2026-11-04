@@ -78,13 +78,19 @@ export async function readSellerExtras(api, raw, places, state, warn, db = prism
   return { teamMembers, fees };
 }
 
-/** Every store changed since the last run (all of them on a full run), newest change first. */
-export async function readStores(api, since, state, warn, db = prisma) {
+/**
+ * Every store changed since the last run (all of them on a full run), newest change first.
+ * `keepStore(sellerRef)` (optional) says whether the store's seller is brought in; a store it
+ * refuses is not recorded and `leftOut()` is called instead.
+ */
+export async function readStores(api, since, state, warn, db = prisma, { keepStore = null, leftOut = null } = {}) {
   let n = 0;
   await guarded(state, 'stores', async () => {
     for await (const st of api.search(RECORD_PATHS.stores, { sortBy: { updatedAt: 'DESC' } })) {
+      state.halt?.(); // Stop sync, pressed while the stores are read
       const at = st.updatedAt ? new Date(st.updatedAt) : null;
       if (since && at && at < since) break;
+      if (keepStore && !(await keepStore(st.seller?.trackingId ?? null))) { leftOut?.(); continue; }
       await keepRecord('store', st.trackingId, st, { sellerRef: st.seller?.trackingId ?? null }, db);
       n++;
     }

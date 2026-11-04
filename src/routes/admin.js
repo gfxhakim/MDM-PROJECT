@@ -4,7 +4,8 @@ import { ah, badRequest } from '../http/errors.js';
 import { requirePermission } from '../auth/middleware.js';
 import { grantElevation, listElevations, revokeElevation } from '../auth/elevation.js';
 import { changeRole, listUsers, removeUser, restoreUser, setActive, setPassword } from '../auth/users.js';
-import { deleteRecords, listDeleted, restoreDeleted } from '../core/deletion.js';
+import { deleteAllData, deleteAllPreview, deleteRecords, listDeleted, restoreDeleted } from '../core/deletion.js';
+import { isSyncRunning } from '../integrations/mdm.js';
 import { dateRange } from '../http/range.js';
 import { prisma } from '../db.js';
 import { OA_APPENDIX_A, ROLES, grant } from '../auth/permissions.js';
@@ -101,4 +102,17 @@ adminRouter.get('/deleted', requirePermission('records.delete'), ah(async (req, 
 // { ids, reason } — the sync may bring them back; their history here is not restored.
 adminRouter.post('/deleted/restore', requirePermission('records.delete'), ah(async (req, res) => {
   res.json(await restoreDeleted(req.user, { ids: req.body?.ids, reason: req.body?.reason }));
+}));
+
+// ───────── delete all data ─────────
+// What would be deleted (counts) and the number to type to confirm.
+adminRouter.get('/delete-all', requirePermission('records.delete'), ah(async (_req, res) => {
+  res.json({ ...(await deleteAllPreview()), syncRunning: isSyncRunning() });
+}));
+// { reason, confirm (the number of merchants here now), emptyDeletedList? } — every lead, seller,
+// conversation and task, the Skipped sellers and People on MDM lists and the MDM records are deleted
+// here (MDM is never touched); accounts, settings and the audit log stay. The automatic sync is paused.
+adminRouter.post('/delete-all', requirePermission('records.delete'), ah(async (req, res) => {
+  const b = req.body ?? {};
+  res.json(await deleteAllData(req.user, { reason: b.reason, confirm: b.confirm, emptyDeletedList: b.emptyDeletedList === true }, { syncRunning: isSyncRunning() }));
 }));

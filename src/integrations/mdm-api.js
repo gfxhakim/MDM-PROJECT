@@ -259,10 +259,11 @@ export async function sellerMetrics(api, sellerId, { now = new Date(), countryId
   return { metrics: out, warnings };
 }
 
-/** sellerIds whose orders were created or changed since `since`. */
-export async function sellersWithOrderChanges(api, since, now = new Date()) {
+/** sellerIds whose orders were created or changed since `since`. `halt` (optional) is called per order, so Stop sync acts during the scan. */
+export async function sellersWithOrderChanges(api, since, now = new Date(), halt = null) {
   const ids = new Set();
   for await (const o of api.search(PATHS.orders, { filters: { updatedAt: { start: since.toISOString(), end: now.toISOString() } } })) {
+    halt?.();
     if (o.seller?.trackingId) ids.add(String(o.seller.trackingId));
   }
   return ids;

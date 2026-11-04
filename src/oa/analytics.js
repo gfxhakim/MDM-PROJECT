@@ -7,6 +7,7 @@
 // walkthrough + wrap/note minutes.
 import { prisma } from '../db.js';
 import { getLiveConfig } from '../config/service.js';
+import { deletedTemplateSends } from '../core/deletion.js';
 
 const DAY = 86_400_000;
 const COUNTRY = { LY: 'Libya', IQ: 'Iraq', LB: 'Lebanon' };
@@ -113,7 +114,9 @@ export async function onboardingAnalytics({ days = 90, now = new Date(), db = pr
 
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const oaKeys = (await db.template.findMany({ where: { module: 'oa' }, select: { key: true } })).map((t) => t.key);
-  const tplUsed = await db.message.count({ where: { kind: 'template', direction: 'out', templateKey: { in: oaKeys }, createdAt: { gte: monthStart } } });
+  // sends to merchants deleted since stay counted, as the budget check counts them (core/templates.js)
+  const tplUsed = await db.message.count({ where: { kind: 'template', direction: 'out', templateKey: { in: oaKeys }, createdAt: { gte: monthStart } } })
+    + await deletedTemplateSends({ since: monthStart, keys: oaKeys }, db);
   const tplByAgent = await db.message.groupBy({ by: ['authorUserId'], where: { kind: 'template', direction: 'out', templateKey: { in: oaKeys }, createdAt: { gte: since } }, _count: true });
 
   return {

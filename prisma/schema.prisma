@@ -356,7 +356,7 @@ model Notification {
 model IntegrationRun {
   id         String    @id @default(cuid())
   kind       String // mdm_sync | zoho_import
-  status     String // dry_run | completed | failed
+  status     String // dry_run | running | completed | failed | stopped (an Admin pressed Stop sync)
   actorId    String?
   summary    String    @default("{}") // JSON counts + per-row results
   startedAt  DateTime  @default(now())
@@ -484,4 +484,15 @@ model DeletedMerchant {
   @@index([mdmRef])
   @@index([phone])
   @@index([deletedAt])
+}
+
+// A setting the Admin changes on a page (not an Appendix D parameter, so not in the versioned
+// config): one JSON value per key. mdm.sync = which merchants and people the MDM pull brings in
+// (by the date they registered or were created on MDM) and whether the automatic sync is paused.
+// Every change is written to the audit log.
+model AppSetting {
+  key         String   @id
+  value       String   @default("{}") // JSON
+  updatedById String?
+  updatedAt   DateTime @updatedAt
 }

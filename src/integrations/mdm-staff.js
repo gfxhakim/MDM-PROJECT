@@ -96,12 +96,16 @@ export async function rememberStaff(row, { runId = null, now = new Date(), manag
     if (user) await syncUser(user, staff, { now }, db);
     return staff;
   }
-  const linked = row.email ? await db.user.findUnique({ where: { email: row.email } }) : null;
+  // An account here already tied to this MDM user (imported earlier, its list row since deleted by
+  // Delete all data) is linked again first, whatever its email is now; otherwise the same email.
+  const byRef = await db.user.findUnique({ where: { mdmRef } });
+  const linked = byRef ?? (row.email ? await db.user.findUnique({ where: { email: row.email } }) : null);
   const staff = await db.mdmStaff.create({ data: { mdmRef, firstSeenAt: now, ...data,
     ...(linked ? { userId: linked.id, decision: 'imported', decidedAt: now, outcome: JSON.stringify({ linked: true, userId: linked.id, role: linked.role }) } : {}) } });
   if (linked) {
     await syncUser(linked, staff, { now }, db);
-    await logEvent({ entityType: 'user', entityId: linked.id, action: 'user.linked_mdm', after: { mdmRef, mdmRole: row.role ?? null, mdmScope: row.scope ?? null }, reason: 'Same email as a user on the MDM platform' }, db);
+    await logEvent({ entityType: 'user', entityId: linked.id, action: 'user.linked_mdm', after: { mdmRef, mdmRole: row.role ?? null, mdmScope: row.scope ?? null },
+      reason: byRef ? 'Account already tied to this user on the MDM platform' : 'Same email as a user on the MDM platform' }, db);
   }
   return staff;
 }

@@ -202,8 +202,11 @@ test('AC-OA-7 — an inbound reply resets the cadence once; a second silence run
 
 test('AC-OA-8 — went-quiet does not send without template budget, and the suppression is visible on the lead', async () => {
   const l = await quietLead();
+  // The send that spends the budget exists before the publish, dated so that both sweeps count it in
+  // their month: publishing runs a sweep at the real time of the test run (AC-25), which is past this
+  // lead's quiet gap from 4 Nov 2026 on, and the sweep below runs at T0 + 4 days.
+  await prisma.message.create({ data: { conversationId: l.conversation.id, direction: 'out', kind: 'template', templateKey: 'oa_nudge_v2', body: 'x', billable: true, createdAt: new Date(Math.max(Date.now(), at(HOUR).getTime())) } });
   await publish({ 'oa.template_budget_month': 1 }, 'admin', 'Budget below usage');
-  await prisma.message.create({ data: { conversationId: l.conversation.id, direction: 'out', kind: 'template', templateKey: 'oa_nudge_v2', body: 'x', billable: true, createdAt: at(HOUR) } });
   const before = await prisma.message.count({ where: { conversationId: l.conversation.id, kind: 'template' } });
   const r = await runOnboardingSweep({ now: at(4 * DAY) });
   assert.equal(r.r5, 0);

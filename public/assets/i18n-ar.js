@@ -2244,3 +2244,101 @@ Object.assign(window.I18N_AR, {
     [/^This account is already (.+)\.$/, (_, r) => `هذا الحساب ${ROLE_AR[r] || r} أصلًا.`],
   ]);
 })();
+// Integrations: what comes in from MDM (date ranges), Stop sync / Resume, Delete all data
+(function () {
+  const add = (dict, entries) => { for (const [k, v] of Object.entries(entries)) dict[k] = v; };
+  add(window.I18N_AR, {
+    'What comes in from MDM': 'ما يُجلب من MDM',
+    'Choose which merchants and people the sync brings in, by the date MDM recorded for them: when the seller registered on MDM, when the person was created on MDM. Merchants and people already here keep being updated whatever you choose. A new sellers range makes the next sync read MDM from the beginning.':
+      'اختر التجّار والأشخاص الذين تجلبهم المزامنة حسب التاريخ الذي سجّله MDM لهم: تاريخ تسجيل البائع على MDM، وتاريخ إنشاء الشخص على MDM. التجّار والأشخاص الموجودون هنا يستمر تحديثهم مهما اخترت. نطاق جديد للبائعين يجعل المزامنة القادمة تقرأ MDM من البداية.',
+    'Sellers': 'البائعون', 'Save': 'حفظ', 'Change a range first': 'غيّر نطاقًا أولًا', 'Choose the date first': 'اختر التاريخ أولًا',
+    'All sellers': 'كل البائعين', 'Recent sellers': 'البائعون الجدد', 'Old sellers': 'البائعون القدامى', 'Custom dates': 'تواريخ مخصّصة',
+    'Everyone': 'الجميع', 'Recent people': 'الأشخاص الجدد', 'Old people': 'الأشخاص القدامى',
+    'Registered before': 'سُجّلوا قبل', 'Created before': 'أُنشئوا قبل', 'Days': 'الأيام', 'Before': 'قبل',
+    'Saving makes the next sync read MDM from the beginning.': 'الحفظ يجعل المزامنة القادمة تقرأ MDM من البداية.',
+    'Now:': 'الآن:', 'every seller': 'كل البائعين', 'everyone': 'الجميع',
+    'sellers registered before': 'البائعون المسجّلون قبل', 'people created before': 'الأشخاص المُنشؤون قبل',
+    'sellers registered': 'البائعون المسجّلون', 'people created': 'الأشخاص المُنشؤون', 'from': 'من', 'up to': 'حتى',
+    'Someone already on the list, or with an account here, is always kept up to date.': 'من هو موجود في القائمة أصلًا، أو لديه حساب هنا، يُحدَّث دائمًا.',
+    'Saved. From the next sync on, only what you chose comes in; merchants and people already here keep being updated.': 'تم الحفظ. من المزامنة القادمة، لا يُجلب إلا ما اخترته؛ والتجّار والأشخاص الموجودون هنا يستمر تحديثهم.',
+    'The next sync reads MDM from the beginning.': 'المزامنة القادمة تقرأ MDM من البداية.',
+    'Brings in:': 'يجلب:', ';': '؛', 'Change': 'تغيير',
+    'The next sync reads MDM from the beginning (the date range changed, or everything was deleted).': 'المزامنة القادمة تقرأ MDM من البداية (تغيّر نطاق التاريخ، أو حُذف كل شيء).',
+    'Paused': 'متوقفة مؤقتًا', 'Automatic sync paused': 'المزامنة التلقائية متوقفة مؤقتًا', '.': '.',
+    'Sync now and Full resync still run once when you press them.': '«مزامنة الآن» و«إعادة مزامنة كاملة» تعملان مرة واحدة عند الضغط عليهما.',
+    'Automatic sync every minute.': 'مزامنة تلقائية كل دقيقة.',
+    'Stop sync': 'إيقاف المزامنة', 'Stopping…': 'جارٍ الإيقاف…', 'stopping': 'جارٍ الإيقاف', 'Resume': 'استئناف', 'Resuming…': 'جارٍ الاستئناف…',
+    'A sync is running': 'مزامنة قيد التشغيل', 'Stopped': 'أُوقفت', 'stopped': 'أُوقفت',
+    'Stopping after the seller it is reading': 'يتوقف بعد البائع الذي يقرؤه الآن',
+    'Stops after the seller it is reading. What was read stays.': 'تتوقف بعد البائع الذي تقرؤه الآن. ما قُرئ يبقى.',
+    'Stops after the seller it is reading; what was read stays. The automatic sync is paused until you press Resume.': 'تتوقف بعد البائع الذي تقرؤه الآن؛ ما قُرئ يبقى. تبقى المزامنة التلقائية متوقفة حتى تضغط «استئناف».',
+    'Stop the sync now? It stops after the seller it is reading; what was read stays. The automatic sync is paused until you press Resume.': 'إيقاف المزامنة الآن؟ تتوقف بعد البائع الذي تقرؤه؛ ما قُرئ يبقى. تبقى المزامنة التلقائية متوقفة حتى تضغط «استئناف».',
+    'Pause the automatic sync? It stays paused until you press Resume. Sync now and Full resync still run once when you press them.': 'إيقاف المزامنة التلقائية مؤقتًا؟ تبقى متوقفة حتى تضغط «استئناف». «مزامنة الآن» و«إعادة مزامنة كاملة» تعملان مرة واحدة عند الضغط عليهما.',
+    'The automatic sync is paused. Press Resume, or Sync now to run it once.': 'المزامنة التلقائية متوقفة مؤقتًا. اضغط «استئناف»، أو «مزامنة الآن» لتشغيلها مرة واحدة.',
+    'Full resync': 'إعادة مزامنة كاملة',
+    'Delete all data': 'حذف كل البيانات',
+    'Deletes, in this app only, every lead and seller with their conversation and messages, onboarding tickets and account-manager tasks, health history and playbook, their notifications, the Skipped sellers list, the People on MDM list and every record kept as MDM sent it. MDM is not touched. Use it to start the import again with the date range you choose above.':
+      'يحذف، في هذا التطبيق فقط، كل عميل محتمل وكل بائع مع محادثته ورسائله، وتذاكر الإعداد ومهام مدير الحسابات، وسجل الصحة وخطة العمل، وإشعاراتهم، وقائمة البائعين المتخطَّين، وقائمة الأشخاص على MDM، وكل سجل محفوظ كما أرسله MDM. لا يُمَسّ MDM. استخدمه لبدء الاستيراد من جديد بنطاق التاريخ الذي تختاره أعلاه.',
+    'Kept: the accounts (everyone keeps signing in), settings, templates, the run history and the audit log, which is never deleted.': 'يبقى: الحسابات (يستمر الجميع في تسجيل الدخول)، والإعدادات، والقوالب، وسجل التشغيلات، وسجل التدقيق الذي لا يُحذف أبدًا.',
+    'Also empty the Deleted merchants list': 'أفرغ أيضًا قائمة التجّار المحذوفين',
+    'Left unticked, the merchants on that list stay out of the sync. Ticked, the sync can bring them back.': 'إن لم تحدّده، يبقى تجّار تلك القائمة خارج المزامنة. وإن حدّدته، يمكن للمزامنة أن تعيدهم.',
+    'The automatic sync is paused at once, so nothing comes back before you choose. Then press Sync now (it reads MDM from the beginning) or Resume.': 'تتوقف المزامنة التلقائية فورًا، فلا يعود شيء قبل أن تختار. ثم اضغط «مزامنة الآن» (تقرأ MDM من البداية) أو «استئناف».',
+    'merchants (leads and sellers)': 'تجّار (عملاء محتملون وبائعون)', 'of them sellers': 'منهم بائعون', 'onboarding tickets': 'تذاكر إعداد',
+    'account-manager tasks': 'مهام مدير الحسابات', 'messages': 'رسائل', 'skipped sellers': 'بائعون متخطَّون', 'people on MDM': 'أشخاص على MDM', 'MDM records': 'سجلات MDM',
+    'A sync is running — press Stop sync and wait until it shows stopped': 'مزامنة قيد التشغيل — اضغط «إيقاف المزامنة» وانتظر حتى تظهر «أُوقفت»',
+    'Write the reason first.': 'اكتب السبب أولًا.',
+    'The Deleted merchants list is emptied too.': 'تُفرَغ قائمة التجّار المحذوفين أيضًا.',
+    'The Deleted merchants list is kept.': 'تبقى قائمة التجّار المحذوفين.',
+    'This cannot be undone. The automatic sync is paused.': 'لا يمكن التراجع عن هذا. تتوقف المزامنة التلقائية مؤقتًا.',
+    'The automatic sync is paused. Choose the date range above, then press Sync now (it reads MDM from the beginning) or Resume.': 'المزامنة التلقائية متوقفة مؤقتًا. اختر نطاق التاريخ أعلاه، ثم اضغط «مزامنة الآن» (تقرأ MDM من البداية) أو «استئناف».',
+    'A written reason is required to delete.': 'يلزم سبب مكتوب للحذف.',
+    'A sync is running. Press Stop sync, wait until it shows "stopped", then delete.': 'مزامنة قيد التشغيل. اضغط «إيقاف المزامنة»، وانتظر حتى تظهر «أُوقفت»، ثم احذف.',
+  });
+  add(window.I18N_AR_TEMPLATES, {
+    'Automatic sync every {n} minutes.': 'مزامنة تلقائية كل {n} دقيقة.',
+    'sellers registered in the last {n} days': 'البائعون المسجّلون في آخر {n} يومًا',
+    'people created in the last {n} days': 'الأشخاص المُنشؤون في آخر {n} يومًا',
+    'Registered in the last {n} days': 'سُجّلوا في آخر {n} يومًا',
+    'Created in the last {n} days': 'أُنشئوا في آخر {n} يومًا',
+    'Registrations older than {n} days that MDM never accepted still go to the Skipped sellers list, not to the leads.': 'التسجيلات الأقدم من {n} يومًا التي لم يقبلها MDM تذهب إلى قائمة البائعين المتخطَّين، لا إلى العملاء المحتملين.',
+    'Delete all data: {n} merchants and everything listed, in this app only. MDM keeps them.': 'حذف كل البيانات: {n} تاجرًا وكل ما هو مذكور، في هذا التطبيق فقط. يحتفظ بهم MDM.',
+    '{n} merchants deleted, with {n} messages, {n} skipped sellers and {n} people on MDM.': 'حُذف {n} تاجرًا، مع {n} رسالة و{n} بائعًا متخطًّى و{n} شخصًا على MDM.',
+    'Not deleted: type {n} — the number of merchants here now — to confirm.': 'لم يُحذف شيء: اكتب {n} — عدد التجّار هنا الآن — للتأكيد.',
+  });
+  // range validation messages from the server ("Sellers: …", "People on MDM: …")
+  const WHO = { 'Sellers': 'البائعون', 'People on MDM': 'الأشخاص على MDM' };
+  const WHY = {
+    'choose all, recent, old or custom dates.': 'اختر: الكل أو الجدد أو القدامى أو تواريخ مخصّصة.',
+    'choose the date the old ones were registered before.': 'اختر التاريخ الذي سُجّل القدامى قبله.',
+    'choose a start date, an end date, or both.': 'اختر تاريخ بداية أو تاريخ نهاية أو كليهما.',
+    'the start of the range is after its end.': 'بداية النطاق بعد نهايته.',
+    'the number of days must be between 1 and 3650.': 'يجب أن يكون عدد الأيام بين 1 و3650.',
+    'choose a date between the years 2000 and 2100.': 'اختر تاريخًا بين عامَي 2000 و2100.',
+  };
+  window.I18N_AR_PATTERNS = (window.I18N_AR_PATTERNS || []).concat([
+    [/^(Sellers|People on MDM): (.+)$/, (m, w, rest) => (WHY[rest] ? `${WHO[w]}: ${WHY[rest]}` : m)],
+  ]);
+})();
+
+// Integrations page — the sync summary, one part per <span> (syncText), and the range editor's date check.
+(function () {
+  const add = (dict, entries) => { for (const [k, v] of Object.entries(entries)) dict[k] = v; };
+  add(window.I18N_AR, {
+    'full': 'كاملة', 'Last sync:': 'آخر مزامنة:', 'dry_run': 'تجربة',
+    'Choose a date between the years 2000 and 2100': 'اختر تاريخًا بين عامَي 2000 و2100',
+  });
+  add(window.I18N_AR_TEMPLATES, {
+    '{n} of {n} sellers read': 'قُرئ {n} من {n} بائع',
+    '{n} sellers read': 'قُرئ {n} بائع',
+    '{n} sellers updated': 'حُدّث {n} بائع',
+    '{n} lead updated': 'حُدّث {n} عميل محتمل',
+    '{n} leads updated': 'حُدّث {n} عميل محتمل',
+    '{n} sellers and {n} leads created': 'أُنشئ {n} بائع و{n} عميل محتمل',
+    '{n} skipped': '{n} متخطًّى',
+    '{n} left out (deleted here)': '{n} مستبعَد (محذوف هنا)',
+    '{n} sellers outside the date range': '{n} بائع خارج نطاق التاريخ',
+    '{n} people outside the date range': '{n} شخص خارج نطاق التاريخ',
+    '{n} errors': '{n} خطأ',
+    '{n} figures missing': '{n} رقم ناقص',
+  });
+})();

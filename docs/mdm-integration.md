@@ -192,6 +192,35 @@ skipped list goes through the same path as the pull.
 pull: within 15 minutes, or whatever `MDM_SYNC_MINUTES` is set to. For instant updates, MDM would
 need to call our webhook. See section 3.
 
+**What comes in, by date (Integrations → What comes in from MDM).** The Administrator chooses
+which sellers and which people the sync brings in, by the date MDM recorded for them: the seller's
+registration (`createdAt`) and the person's creation on MDM (`createdAt`). Each can be every one,
+recent ones (registered in the last 7, 30, 60, 90, 180 or 365 days), old ones (registered before a
+day) or a custom range (from a day, to a day, or both). A seller or person not here yet and outside
+the range is not brought in, not put on the Skipped list and not recorded; the run counts them
+("N sellers outside the date range"). Merchants and people already here, as a lead, a seller, a
+person on the list or an account tied to them (same MDM id or same email), keep being updated
+whatever the range. A store comes in only with a seller that is brought in. Dates before the year
+2000 or after 2100 are refused (a year typed only in part). MDM
+lists no `createdAt` filter for sellers in its Swagger, so every seller is still read and the
+range is applied here; a changed sellers range makes the next run read MDM from the beginning.
+Pending registrations older than `MDM_LEAD_MAX_AGE_DAYS` still go to the Skipped list, as before.
+The setting is kept in `AppSetting` (`mdm.sync`); each change is one audit entry.
+
+**Stop sync.** Stops the run in progress before its next record (the record being read is
+finished; what was read stays) and pauses the automatic sync until **Resume**. The run is recorded
+as `stopped` with who pressed it; the next run starts from the last *completed* run, so nothing is
+missed. While paused, **Sync now** and **Full resync** still run once when pressed.
+
+**Delete all data (Integrations, Administrator only).** Deletes every lead and seller here, with
+their conversations and messages, onboarding tickets and AM tasks, health history and playbook,
+notifications, the Skipped sellers list, the People on MDM list and the MDM records. Kept: the
+accounts, settings and configuration, templates, the run history and the audit log. The Deleted
+merchants list is kept unless the Administrator ticks to empty it. MDM is never touched. It needs
+a written reason and the number of merchants typed, is refused while a sync runs, pauses the
+automatic sync and makes the next run a full one. Template sends deleted with it still count
+against the month's budget. One audit entry (`records.deleted_all`) lists every merchant deleted.
+
 ## 2. Our work recorded on MDM (write-back)
 
 Every state change in our app goes into the audit log. The write-back reads that log in order and
