@@ -4,7 +4,7 @@
 //   • placing follows the import's path: contact + conversation + seller record, owner by AM 3.2
 //     (same market, smallest book, no cross-market fallback) unless the Admin names a manager who
 //     covers the market and has room; the platform figures are read by the next sync;
-//   • opening a lead is capture rule r1 (registerMerchant), in the market the Admin chooses;
+//   • opening a lead is capture rule r1 through the pull's own path (openPlatformLead), in the market the Admin chooses;
 //   • a seller already here is only reported — a lead is activated in the onboarding console, so
 //     the activation gate and the handoff record still apply;
 //   • one audit entry per decision run with the full list and each item's result (OA 13.2);
@@ -13,7 +13,8 @@
 import { prisma } from '../db.js';
 import { badRequest } from '../http/errors.js';
 import { normalizePhone } from '../core/contacts.js';
-import { registerMerchant } from '../oa/service.js';
+import { openPlatformLead } from './mdm.js';
+import { platformPeople } from './mdm-staff.js';
 import { logEvent } from '../services/audit.js';
 import { getLiveConfig } from '../config/service.js';
 import { createSellerRecord } from './sellers.js';
@@ -25,6 +26,7 @@ export const REASONS = {
   phone: 'No valid phone number',
   rejected: 'Rejected on the platform',
   duplicate: 'Already here',
+  phone_changed: 'Phone changed on MDM',
   stale: 'Old registration, never accepted',
   other: 'Other',
 };
@@ -38,7 +40,8 @@ const suggestMarket = (h) => [h.country, ...parse(h.countries, [])].find((c) => 
 const snapshot = (row) => ({
   mdmRef: row.mdmRef, name: row.name ?? null, phone: row.phone ?? null, country: row.country ?? null, countryId: row.countryId ?? null,
   places: row.places ?? [], joinStatus: row.joinStatus ?? null, joinStatusDate: row.joinStatusDate ?? null, createdAt: row.createdAt ?? null,
-  updatedAt: row.updatedAt ?? null, utm: row.utm ?? null, accountManagerRef: row.accountManagerRef ?? null,
+  updatedAt: row.updatedAt ?? null, utm: row.utm ?? null, accountManagerRef: row.accountManagerRef ?? null, accountManagerName: row.accountManagerName ?? null,
+  responsibleRef: row.responsibleRef ?? null, responsibleName: row.responsibleName ?? null, history: row.history ?? [],
 });
 
 /** Refs the pull watches: a waiting or left-out seller that now imports by the normal rules is marked imported. */
@@ -54,7 +57,7 @@ export async function rememberSkipped(row, result, { runId = null, now = new Dat
     reasonCode: REASONS[result.code] ? result.code : 'other', reason: String(result.reason ?? ''),
     name: row.name ?? null, phone: row.phone ?? null, country: row.country ?? null, countries: JSON.stringify(row.countries ?? []), countryId: row.countryId ?? null,
     joinStatus: row.joinStatus ?? null, joinStatusDate: dateOr(row.joinStatusDate), registeredAt: dateOr(row.createdAt), accountManagerRef: row.accountManagerRef ?? null,
-    utm: row.utm ?? null, platform: JSON.stringify(snapshot(row)), lastSeenAt: now, runId,
+    responsibleRef: row.responsibleRef ?? null, utm: row.utm ?? null, platform: JSON.stringify(snapshot(row)), lastSeenAt: now, runId,
   };
   const existing = await db.mdmSkipped.findUnique({ where: { mdmRef } });
   if (!existing) return db.mdmSkipped.create({ data: { mdmRef, firstSeenAt: now, ...data } });
@@ -91,9 +94,11 @@ function view(h, users) {
  * Also returns the counts for the tabs and what the Admin needs to decide: markets, and each
  * account manager with their book against the ceiling (AM 12.4 shows that against each option).
  */
-export async function listSkipped({ decision = 'waiting', reason = null, q = null } = {}, db = prisma) {
+export async function listSkipped({ decision = 'waiting', reason = null, q = null, from = null, to = null } = {}, db = prisma) {
   const where = decision === 'all' ? {} : decision === 'waiting' ? { decision: null } : { decision: String(decision) };
   if (reason) where.reasonCode = String(reason);
+  // the date the seller registered on MDM
+  if (from || to) where.registeredAt = { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) };
   const s = String(q ?? '').trim();
   if (s) where.OR = [{ mdmRef: { contains: s } }, { name: { contains: s } }, { phone: { contains: s } }];
   const [items, people, byReason, byDecision, { values: config }, ams] = await Promise.all([
@@ -167,9 +172,13 @@ export async function decideSkipped(user, { ids, action, market = null, managerI
         out.reason = `Already here as ${dup.name} (${e164})${dup.contactType === 'seller' ? ', a seller.' : ' — a lead is activated in the onboarding console.'}`; continue;
       }
       if (await db.seller.findUnique({ where: { mdmRef: h.mdmRef } })) { out.reason = 'Already a seller here with this platform id.'; continue; }
+      const sameRef = await db.contact.findFirst({ where: { mdmRef: h.mdmRef } });
+      if (sameRef) { out.reason = `Already here as ${sameRef.name} (${sameRef.phone}) — one contact per merchant; change the number on that contact if MDM is right.`; continue; }
       if (action === 'lead') {
-        const r = await registerMerchant({ phone: e164, name: h.name, country: m, sourceUtm: h.utm ?? 'mdm_platform' }, { now }, db);
-        await db.contact.update({ where: { id: r.contact.id }, data: { mdmRef: h.mdmRef } });
+        // the same path as the pull, so MDM's join status, dates, responsible agent and history come too
+        const platform = parse(h.platform, {});
+        const r = await openPlatformLead({ ...platform, name: h.name ?? platform.name, utm: h.utm ?? platform.utm, createdAt: platform.createdAt ?? h.registeredAt },
+          { phone: e164, market: m, ref: h.mdmRef, now }, await platformPeople(db), db);
         const outcome = { market: m, contactId: r.contact.id, ticketId: r.ticket?.id ?? null, assigned: !!r.ticket?.assigneeId, registration: r.outcome };
         await db.mdmSkipped.update({ where: { id }, data: { decision: 'lead', decidedById: user.id, decidedAt: now, decisionNote: written, outcome: JSON.stringify(outcome) } });
         out.ok = true; out.contactId = r.contact.id; out.ticketId = outcome.ticketId;
@@ -185,7 +194,7 @@ export async function decideSkipped(user, { ids, action, market = null, managerI
       const activatedAt = dateOr(h.joinStatusDate) ?? dateOr(h.registeredAt) ?? now;
       const { seller, ownership: placed } = await createSellerRecord({ phone: e164, name: h.name || e164, market: m, mdmRef: h.mdmRef, source: 'mdm_platform', activatedAt,
         welcomeCallAt: null, mirror: {}, managerId: named?.id ?? null, ownership, lastSyncedAt: null }, { actorId: user.id, config, managers }, db);
-      await db.contact.update({ where: { id: seller.contactId }, data: { mdmRef: h.mdmRef } });
+      await db.contact.update({ where: { id: seller.contactId }, data: { mdmRef: h.mdmRef, ...(h.registeredAt ? { mdmCreatedAt: h.registeredAt } : {}) } });
       const outcome = { market: m, sellerId: seller.id, contactId: seller.contactId, ownership: placed };
       await db.mdmSkipped.update({ where: { id }, data: { decision: 'placed', decidedById: user.id, decidedAt: now, decisionNote: written, outcome: JSON.stringify(outcome), figuresAt: null } });
       out.ok = true; out.sellerId = seller.id; out.outcome = `${MARKET_NAMES[m]} book · ${placed}`;

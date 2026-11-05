@@ -56,9 +56,10 @@ if (mdmConfig().apiKey) {
   const sync = async () => {
     if (busy) return; busy = true;
     try {
-      const s = await syncSellers();
-      console.log(`MDM sync: ${s.fetched} sellers read, ${s.updated} updated, ${s.sellersCreated} sellers and ${s.leadsCreated} leads created, ${s.skippedCount} skipped, ${s.errorCount} errors`);
-    } catch (e) { if (e.code !== 'sync_running') console.error('MDM sync', e.message); } finally { busy = false; }
+      // automatic: skipped while an Administrator has paused the sync (Integrations → Stop sync)
+      const s = await syncSellers({ automatic: true });
+      console.log(`MDM sync${s.stopped ? ' (stopped)' : ''}: ${s.fetched} sellers read, ${s.updated} updated, ${s.sellersCreated} sellers and ${s.leadsCreated} leads created, ${s.skippedCount} skipped, ${s.outOfRange?.sellers ?? 0} outside the date range, ${s.errorCount} errors`);
+    } catch (e) { if (!['sync_running', 'sync_paused'].includes(e.code)) console.error('MDM sync', e.message); } finally { busy = false; }
   };
   setTimeout(sync, 10_000);
   setInterval(sync, every);

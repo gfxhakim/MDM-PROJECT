@@ -5,7 +5,7 @@
 // always what the server decided — including refusals, which are shown with their reason.
 /* global API, I18N, S, CFG, TEAM, AMS, ME, RULES, AUDIT, VERSIONS, CFG_FIELDS, TEMPLATES, MACROS, CHECKS, M,
    render, toast, openModal, closeModal, lead, esc, ic, opt, fmtT, fmtHM, days, iso, oa, winState, winText, chDot, renderTpl,
-   NO_ANSWER_MAX, QUIET_MAX, QUIET_GAP */
+   NO_ANSWER_MAX, QUIET_MAX, QUIET_GAP, fmt, rel, STATUS */
 (function () {
   const COUNTRY = { LY: 'Libya', IQ: 'Iraq', LB: 'Lebanon' };
   const COLORS = ['#DC2626', '#0E7490', '#7C3AED', '#2B8A3E', '#B45309', '#2563EB'];
@@ -50,9 +50,12 @@
   }
 
   // ───────────── mapping server → prototype ─────────────
+  // "Self-serve · Hub" only once the Hub was sent (OA 7.3); a strong-lead call with no booking yet
+  // stays Contacted until the walkthrough is booked (OA 6.5).
+  const hubSent = (t) => (t.events || []).some((e) => e.action === 'ticket.hub_sent');
   function stageOf(t) {
     if (t.status === 'activated') return 'activated';
-    if (t.stage === 'walkthrough') return t.walkthroughAt ? 'booked' : 'hub';
+    if (t.stage === 'walkthrough') return t.walkthroughAt ? 'booked' : hubSent(t) ? 'hub' : 'contacted';
     if (t.stage === 'documents') return 'documents';
     return t.status === 'new' ? 'registered' : 'contacted';
   }
@@ -92,6 +95,8 @@
           else T(e, 'status', `Status → ${STATUS[STATUS_MAP[a.status]]?.label ?? a.status}`, e.reason || '');
           break;
         case 'ticket.reopened': T(e, 'status', 'Queue item reopened', e.reason || ''); break;
+        case 'ticket.imported_status': T(e, 'status', `Status from MDM → ${STATUS[STATUS_MAP[a.status]]?.label ?? a.status}`, e.reason || ''); break;
+        case 'ticket.held': T(e, 'assign', `Held — ${a.holdReason ?? ''}`, e.reason || 'Back in the holding queue; assigned again as soon as an agent has capacity.'); break;
         case 'ticket.walkthrough_booked': T(e, 'book', `Walkthrough booked — ${MODE_FROM_API[a.walkthroughMode] ?? ''}`, a.walkthroughAt ? fmtT(a.walkthroughAt) : ''); break;
         case 'ticket.hub_sent': T(e, 'hub', 'Resource Hub sent — walkthrough declined', 'Went-quiet cadence started.'); break;
         case 'ticket.followup_sent': T(e, 'quiet', `Follow-up ${a.followupNo} of ${QUIET_MAX} — no reply`, 'Template oa_nudge_v2 sent.'); break;
@@ -105,6 +110,26 @@
     return tl.sort((x, y) => new Date(y.at) - new Date(x.at));
   }
 
+  // The cadence as the ticket recorded it: when each no-answer attempt was logged, when each
+  // follow-up went out, and a follow-up the rule could not send (AC-OA-8). A reply reset (r7) or
+  // a reopen starts the counters again, so the dates start again with them.
+  function cadenceOf(t) {
+    const evs = [...(t.events || [])].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    let tries = []; let sent = []; let calls = 0; let suppressed = null;
+    for (const e of evs) {
+      const a = e.after ? JSON.parse(e.after) : {};
+      if (e.action === 'ticket.cadence_reset' || e.action === 'ticket.reopened') { tries = []; sent = []; suppressed = null; }
+      else if (e.action === 'ticket.call_logged') { calls++; if (e.reason === 'no_answer' && a.attemptNo) tries[a.attemptNo - 1] = e.createdAt; }
+      else if (e.action === 'ticket.hub_sent') { sent = []; suppressed = null; }
+      else if (e.action === 'ticket.followup_sent') { if (a.followupNo) sent[a.followupNo - 1] = e.createdAt; suppressed = null; }
+      else if (e.action === 'ticket.followup_suppressed') {
+        const m = /follow-up (\d+) of (\d+) not sent: (.*)$/.exec(e.reason || '');
+        suppressed = m ? { n: +m[1], max: +m[2], why: m[3] } : { n: (t.followupNo || 0) + 1, max: QUIET_MAX, why: e.reason || '' };
+      }
+    }
+    return { attemptDates: tries, followupDates: sent, callCount: calls, suppressed: (t.tags || []).includes('oa_followup_suppressed') ? suppressed : null };
+  }
+
   function leadOf(t, i) {
     const c = t.contact;
     const conv = t.conversation;
@@ -112,9 +137,9 @@
     const q = t.qualification || {};
     const l = {
       id: t.id, ticket: '#' + t.id.slice(-6).toUpperCase(), contactCode: 'CT-' + c.id.slice(-5).toUpperCase(), conv: conv ? 'C-' + conv.id.slice(-5).toUpperCase() : '—',
-      name: c.name, ar: c.nameAr || '', country: COUNTRY[c.country] || c.country, city: '—', store: '—', phone: c.phone, email: '',
+      name: c.name, ar: c.nameAr || '', country: COUNTRY[c.country] || c.country, countryCode: c.country, city: '—', store: '—', phone: c.phone, email: '',
       source: h.source || c.sourceUtm || 'whatsapp', channel: conv?.channel === 'portal' ? 'portal' : 'whatsapp', utm: c.sourceUtm || '—',
-      registeredAt: t.createdAt, ownerId: t.assigneeId, status: STATUS_MAP[t.status] || t.status, stage: stageOf(t),
+      registeredAt: t.createdAt, enteredAt: c.mdmCreatedAt || c.createdAt || t.createdAt, ownerId: t.assigneeId, status: STATUS_MAP[t.status] || t.status, stage: stageOf(t),
       // The prototype's counter is the no-answer cadence; answered calls are not cadence attempts.
       attempts: t.status === 'failed_to_contact' || (t.status === 'cold_lead' && (t.tags || []).includes('oa_cold_no_answer')) ? t.attemptNo : 0,
       quiet: t.followupNo, nextAt: t.dueAt,
@@ -130,6 +155,7 @@
     };
     l.msgs = (conv?.messages || []).map((m) => msgOf(m, l));
     l.tl = timelineOf(t, l);
+    Object.assign(l, cadenceOf(t));
     return l;
   }
 
@@ -169,6 +195,7 @@
     }));
     AMS = users.filter((u) => u.role === 'ACCOUNT_MANAGER').map((u) => u.name); // eslint-disable-line no-global-assign
     S.leads = leads.map(leadOf);
+    await loadViews();
     await loadAnalytics();
     if (isAdminView) await loadAdmin();
     render();
@@ -184,18 +211,20 @@
   }
 
   async function loadAdmin() {
-    const [audit, versions, templates, usage, elevations] = await Promise.all([
+    const [audit, versions, templates, usage, elevations, stateMachine, roleGrants] = await Promise.all([
       API.get('/api/admin/audit?limit=100').catch(() => []),
       API.get('/api/config/versions').catch(() => []),
       API.get('/api/templates?module=oa').catch(() => []),
       API.get('/api/templates/usage?days=90').catch(() => ({ sends: {} })),
       API.get('/api/admin/elevations').catch(() => null),
+      X.stateMachine ? X.stateMachine : API.get('/api/oa/state-machine').catch(() => null),
+      X.grants['roles.manage'] === true ? API.get('/api/admin/roles/OA_AGENT/grants').catch(() => null) : null,
     ]);
     TPL_STATE = Object.fromEntries(templates.map((t) => [t.key, { on: t.enabled, used: usage.sends[t.key] ?? 0, status: t.status }])); // eslint-disable-line no-global-assign
     for (const t of TEMPLATES) if (!TPL_STATE[t.key]) TPL_STATE[t.key] = { on: false, used: 0 };
-    X.elevations = elevations;
-    AUDIT.length = 0;
-    for (const e of audit) {
+    X.elevations = elevations; X.stateMachine = stateMachine; X.roleGrants = roleGrants;
+    if (!X.auditFiltered) AUDIT.length = 0; // a filtered audit view keeps what the filter read
+    for (const e of X.auditFiltered ? [] : audit) {
       AUDIT.push({
         at: new Date(e.createdAt), who: e.actorId ? nameOf(e.actorId) : 'Rule (automation)',
         what: `${esc(e.action)} <code>${esc(e.entityType)} ${esc(String(e.entityId).slice(-6))}</code>${e.reason ? ' — ' + esc(e.reason) : ''}`,
@@ -237,6 +266,63 @@
         <span class="av" style="${adm ? 'color:#4F46E5' : ''}">${initials(X.me.name)}</span> <span data-i18n="off">${esc(X.me.name)}</span></span>
       ${X.me.role === 'ADMIN' && adm ? '<a class="btn btn-ghost btn-sm" href="/integrations">Integrations</a>' : ''}
       <button class="btn btn-ghost btn-sm" onclick="API.logout()">Sign out</button>`;
+  };
+
+  // ───────────── cadence cards (OA 5.1–5.3) ─────────────
+  // The prototype's two trackers, drawn from the ticket: real attempt dates, the configured
+  // numbers, and a follow-up the rule did not send shown on the lead (AC-OA-8), never silent.
+  const perGap = (g) => (g === 1 ? 'one a day' : `one every ${g} days`);
+  window.cadenceCard = function (l) {
+    const cold = l.attempts >= NO_ANSWER_MAX; const gap = CFG.noAnswerGapD;
+    return `<div class="card">
+    <div class="card-h">${ic('phone', 16)}<h3>No-answer cadence</h3><span class="sp"></span>
+      <span class="chip">${l.attempts} of ${NO_ANSWER_MAX} · ${perGap(gap)}</span></div>
+    <div class="cad">
+      ${Array.from({ length: NO_ANSWER_MAX }, (_, i) => {
+        const n = i + 1; const dn = n <= l.attempts; const now = !cold && n === l.attempts + 1; const at = (l.attemptDates || [])[i];
+        return `<div class="cad-step ${dn ? 'done' : ''} ${now ? 'now' : ''}"><span class="bub">${dn ? ic('check', 11, 3) : n}</span>
+          <div class="lb">Attempt ${n}</div><div class="dt num">${dn ? (at ? fmt(at) : '—') : now && l.nextAt ? fmt(l.nextAt) : '—'}</div></div>`;
+      }).join('')}
+      <div class="cad-step ${cold ? 'cold' : ''}"><span class="bub">${ic('snow', 11)}</span><div class="lb">Cold Lead</div><div class="dt">after ${NO_ANSWER_MAX}</div></div>
+    </div>
+    ${cold ? `<div class="banner bn-slate" style="margin-top:14px">${ic('snow', 16)}<div>All ${NO_ANSWER_MAX} attempts used — moved to Cold Lead automatically.</div></div>`
+    : `<div class="banner bn-amber" style="margin-top:14px">${ic('bell', 16)}
+      <div><b>Attempt ${l.attempts + 1} of ${NO_ANSWER_MAX} due ${l.nextAt ? rel(l.nextAt).toLowerCase() : 'today'}.</b>
+      Status stays <b>Failed to Contact</b> and the counter rises ${gap === 1 ? 'daily' : `every ${gap} days`}. Only a reply changes the status, and only by hand.</div></div>`}
+  </div>`;
+  };
+  window.quietCard = function (l) {
+    const cold = l.quiet >= QUIET_MAX; const s = l.suppressed;
+    return `<div class="card">
+    <div class="card-h">${ic('clock', 16)}<h3>Went-quiet cadence</h3><span class="sp"></span>
+      <span class="chip">${l.quiet} of ${QUIET_MAX} · every ${QUIET_GAP} days</span></div>
+    <div class="cad">
+      ${Array.from({ length: QUIET_MAX }, (_, i) => {
+        const n = i + 1; const dn = n <= l.quiet; const now = !cold && n === l.quiet + 1;
+        return `<div class="cad-step ${dn ? 'done' : ''} ${now ? 'now' : ''}"><span class="bub">${dn ? ic('check', 11, 3) : n}</span>
+          <div class="lb">Follow-up ${n}</div><div class="dt">day ${n * QUIET_GAP}</div></div>`;
+      }).join('')}
+      <div class="cad-step ${cold ? 'cold' : ''}"><span class="bub">${ic('snow', 11)}</span><div class="lb">Cold Lead</div><div class="dt">day ${QUIET_MAX * QUIET_GAP}</div></div>
+    </div>
+    ${s && !cold ? `<div class="banner bn-amber" style="margin-top:14px">${ic('bell', 16)}<div><b>Follow-up ${s.n} of ${s.max} was not sent.</b> <span>${esc(s.why)}</span></div></div>` : ''}
+    <div class="banner ${cold ? 'bn-slate' : 'bn-blue'}" style="margin-top:14px">${ic('spark', 16)}
+      <div>${cold ? (QUIET_MAX === 3 ? 'Three follow-ups, no reply — moved to Cold Lead.' : `${QUIET_MAX} follow-ups, no reply — moved to Cold Lead.`)
+        : 'Every follow-up here lands outside the 24-hour window, so each one is a billable template send. Ask one multiple-choice question — <em>"pricing, trust, or timing?"</em>'}</div></div>
+  </div>`;
+  };
+  // Cold Lead banner: the win-back sentence only while rule r9 is on (it ships disabled, OA 5.5).
+  X.coldLine = function () {
+    const r9 = RULES.find((r) => r.id === 'r9');
+    return r9 && r9.on ? `Cadence exhausted. One win-back template is scheduled for day ${CFG.winbackDay}, then the ticket closes.` : 'Cadence exhausted.';
+  };
+  // Time on this lead: every logged call counts, answered ones too (the ticket's own record).
+  const protoLeadTime = window.leadTime;
+  window.leadTime = function (l) {
+    const t = protoLeadTime(l);
+    const extra = Math.max(0, (l.callCount || 0) - Math.max(t.callN, l.attempts || 0));
+    if (!extra) return t;
+    const add = extra * (CFG.noAnswerMin + CFG.wrapMin / 2);
+    return { ...t, call: t.call + add, total: Math.round(t.total + add), callN: t.callN + extra };
   };
 
   // ───────────── conversation ─────────────
@@ -290,8 +376,17 @@
   window.saveCall = function (id) {
     const l = lead(id); const note = (document.getElementById('m-note') || {}).value || ''; const outcome = M.choice;
     closeModal();
-    act(() => logOutcome(l, outcome, note.trim()), 'Outcome logged');
+    let res = null;
+    act(async () => { res = await logOutcome(l, outcome, note.trim()); }).then(() => { if (res) callToast(l, outcome, res); });
   };
+  // the prototype's messages after a call, from what the server decided
+  function callToast(l, outcome, t) {
+    if (outcome === 'junk') return toast('Marked Junk Lead — excluded from your metrics');
+    if (outcome !== 'no_answer') return toast(`Set to ${STATUS[outcome].label} — book the walkthrough next`, 'ok');
+    if (t.status === 'cold_lead') return toast(`${l.name} moved to Cold Lead after ${t.attemptNo} attempts`, 'warn');
+    const gap = CFG.noAnswerGapD;
+    return toast(`Attempt ${t.attemptNo} logged. Attempt ${t.attemptNo + 1} is due ${gap === 1 ? 'tomorrow' : `in ${gap} days`}.`, 'ok');
+  }
   window.applyOutcome = function (l, outcome, note) { return act(() => logOutcome(l, outcome, note)); };
 
   window.runMacro = function (id, key) {
@@ -443,16 +538,46 @@
     closeModal();
     act(() => API.post(`/api/contacts/${l.contactId}/block`, { reason }), 'Contact blocked — reversible, audited');
   };
+  // A held lead: the platform's pick (OA 4.5 "Assign over capacity": most free minutes, agents on
+  // calls excluded) or a named agent (OA 4.5 "Reassign": Administrator / shift lead moves ownership).
   window.forceAssign = function (id) {
     const l = lead(id);
-    reasonModal('Assign over capacity', 'Assigns this held lead to the agent with the most free minutes, ignoring the capacity check. Agents on calls are still excluded.', 'Assign',
-      (reason) => act(() => API.post(`/api/oa/tickets/${l.id}/assign-over-capacity`, { reason }), 'Assigned over capacity'));
+    M = { choice: 'auto', ready: () => !!M.choice }; // eslint-disable-line no-global-assign
+    const agents = TEAM.map((t) => {
+      const a = availability(t.id);
+      const markets = JSON.parse(X.userById.get(t.id)?.markets || '[]');
+      const open = S.leads.filter((x) => x.ownerId === t.id && isOpen(x)).length;
+      const away = l.countryCode && markets.length && !markets.includes(l.countryCode);
+      return opt('choice', t.id, esc(t.name), [esc(t.countries.join(', ') || '—'), `${open} open now`, `${a.free} free min`, a.onCall ? 'on a call' : '', away ? 'not this lead\'s market' : '']
+        .filter(Boolean).map((x) => `<span>${x}</span>`).join(' · '));
+    }).join('');
+    openModal(`<div class="modal-h">${ic('users', 18)}<h3>Assign ${esc(l.name)}</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b">
+        ${opt('choice', 'auto', 'Agent with the most free minutes', 'Ignores the capacity check. Agents on calls are still excluded.')}
+        ${agents || `<div class="banner bn-amber tiny" style="margin-top:8px">${ic('alert', 14)}<div>No onboarding agent account yet. Import your commercials from <b>People on MDM</b> on the Integrations page, with the role Onboarding agent.</div></div>`}
+        <label class="fl" style="margin-top:12px">Reason — required, written to the audit log</label>
+        <textarea class="fi" id="m-note"></textarea></div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" id="modal-go" onclick="MDM.doAssign('${l.id}')">Assign</button></div>`);
+    pick('choice', 'auto');
+  };
+  X.doAssign = function (id) {
+    const l = lead(id); const to = M.choice;
+    const reason = ((document.getElementById('m-note') || {}).value || '').trim();
+    if (!reason) return toast('A written reason is required.', 'warn');
+    closeModal();
+    if (to === 'auto') return act(() => API.post(`/api/oa/tickets/${l.id}/assign-over-capacity`, { reason }), 'Assigned over capacity');
+    act(() => API.post(`/api/oa/tickets/${l.id}/reassign`, { toUserId: to, reason }), `Assigned to ${nameOf(to)}`);
   };
   window.assignAll = function () {
-    const held = S.leads.filter((l) => !l.ownerId && isOpen(l));
-    if (!held.length) return toast('Nothing is being held right now');
-    reasonModal(`Assign ${held.length} held lead(s) over capacity`, 'Each lead goes to the agent with the most free minutes. Results are reported per ticket.', 'Assign all',
-      (reason) => act(async () => bulkToast(await API.post('/api/oa/bulk', { op: 'assign_over_capacity', ticketIds: held.map((l) => l.id), reason }), 'assigned over capacity')));
+    const held = S.leads.filter((l) => !l.ownerId && isOpen(l)).sort((a, b) => new Date(a.registeredAt) - new Date(b.registeredAt));
+    if (!held.length) return; // the button is greyed with "Nothing is being held right now"
+    const run = held.slice(0, MAX_BULK);
+    const rest = held.length - run.length;
+    reasonModal(`Assign ${run.length} held lead(s) over capacity`,
+      `${rest ? `At most ${MAX_BULK} per run: the ${run.length} that have waited longest go now, press again for the other ${rest}. ` : ''}Each lead goes to the agent with the most free minutes. Results are reported per ticket.`, 'Assign all',
+      (reason) => act(async () => bulkToast(await API.post('/api/oa/bulk', { op: 'assign_over_capacity', ticketIds: run.map((l) => l.id), reason }), 'assigned over capacity')));
   };
 
   // ───────────── configuration: draft → simulate → publish → roll back (server) ─────────────
@@ -579,14 +704,455 @@
     closeModal();
     act(() => API.post('/api/admin/elevations', { userId: g('el-user'), role: g('el-role'), endsAt, reason }), 'Cover granted — it expires by itself');
   };
-  window.togPerm = function () { toast('Roles and grants are fixed by the specification; changes are an Administrator release.', 'warn'); };
+  window.togPerm = function () {}; // the switches are read-only (see cfgPerm below)
+
+  // ───────────── queue filters ─────────────
+  // The prototype's funnel buttons name them: country, source, channel, window state, owner (the
+  // queue), plus age (All Leads). Age is a date range on when the merchant registered — on MDM, or
+  // here for a merchant who came in through WhatsApp — with quick choices and a custom range (the
+  // Admin's request, 2 Nov). A filter narrows the current view after its own condition and the
+  // search; the rail counts stay the view's. The choice lives in S, so a language switch or a route
+  // change keeps it (OA 6.3, AC-OA-24). Changing a filter clears the selection, so a bulk action only
+  // ever acts on rows the Admin can see. "Save this view" (OA 6.3) stores them under a name (below).
+  const FILTER_KEYS = ['country', 'source', 'channel', 'win', 'owner'];
+  S.filters = S.filters || { country: '', source: '', channel: '', win: '', owner: '', when: '', from: '', to: '' };
+  S.filtersOpen = false;
+  const WIN_LABEL = { open: 'Open', soon: 'Closing soon', shut: 'Template only' };
+  const FILTER_LABEL = { country: 'Country', source: 'Source', channel: 'Channel', win: 'Window state', owner: 'Owner', when: 'Registered' };
+  const WHEN = [['', 'Any time'], ['today', 'Today'], ['yesterday', 'Yesterday'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Custom range']];
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  /** The range a choice means, in the viewer's own calendar days: { from, to } as YYYY-MM-DD. */
+  function whenRange(when, from, to) {
+    const t = new Date(); const day = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return ymd(d); };
+    switch (when) {
+      case 'today': return { from: ymd(t), to: ymd(t) };
+      case 'yesterday': return { from: day(-1), to: day(-1) };
+      case '7': return { from: day(-6), to: ymd(t) };
+      case '30': return { from: day(-29), to: ymd(t) };
+      case 'month': return { from: ymd(new Date(t.getFullYear(), t.getMonth(), 1)), to: ymd(t) };
+      case 'lastmonth': return { from: ymd(new Date(t.getFullYear(), t.getMonth() - 1, 1)), to: ymd(new Date(t.getFullYear(), t.getMonth(), 0)) };
+      case 'custom': return { from: from || '', to: to || '' };
+      default: return { from: '', to: '' };
+    }
+  }
+  function inRange(at, f = S.filters) {
+    const r = whenRange(f.when, f.from, f.to);
+    if (!r.from && !r.to) return true;
+    if (!at) return false;
+    const d = new Date(at);
+    if (r.from && d < new Date(r.from + 'T00:00:00')) return false;
+    if (r.to && d > new Date(r.to + 'T23:59:59.999')) return false;
+    return true;
+  }
+  const uniq = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  function filterOptions() {
+    return {
+      country: uniq(S.leads.map((l) => l.country)).map((c) => [c, c]),
+      source: uniq(S.leads.map((l) => l.source)).map((x) => [x, x]),
+      channel: uniq(S.leads.map((l) => l.channel)).map((k) => [k, CHAN[k]?.label || k]),
+      win: Object.entries(WIN_LABEL),
+      owner: [['me', 'Me'], ...TEAM.filter((t) => t.id !== ME).map((t) => [t.id, t.name]), ['none', 'Waiting for capacity']],
+    };
+  }
+  function passesFilters(l, f = S.filters) {
+    if (f.country && l.country !== f.country) return false;
+    if (f.source && l.source !== f.source) return false;
+    if (f.channel && l.channel !== f.channel) return false;
+    if (f.win && !(isOpen(l) && winState(l) === f.win)) return false;
+    if (!inRange(l.enteredAt, f)) return false;
+    if (f.owner === 'me') return l.ownerId === ME;
+    if (f.owner === 'none') return !l.ownerId && isOpen(l);
+    if (f.owner) return l.ownerId === f.owner;
+    return true;
+  }
+  const dateSet = () => { const r = whenRange(S.filters.when, S.filters.from, S.filters.to); return !!(r.from || r.to); };
+  const activeFilters = () => [...FILTER_KEYS.filter((k) => S.filters[k]), ...(dateSet() ? ['when'] : [])];
+  const fmtDay = (s) => (s ? new Date(s + 'T12:00:00').toLocaleDateString(I18N.lang === 'ar' ? 'ar' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '…');
+  const filterText = (k) => {
+    if (k === 'when') {
+      const f = S.filters;
+      if (f.when !== 'custom') return WHEN.find((w) => w[0] === f.when)?.[1] ?? '';
+      return `${fmtDay(f.from)} – ${fmtDay(f.to)}`;
+    }
+    const v = S.filters[k]; const o = filterOptions()[k].find((x) => x[0] === v); return o ? o[1] : v;
+  };
+  const protoFiltered = window.filtered;
+  window.filtered = function () { return protoFiltered().filter((l) => passesFilters(l)); };
+  const protoAdmFiltered = window.admFiltered;
+  window.admFiltered = function () { return protoAdmFiltered().filter((l) => passesFilters(l)); };
+  X.setFilter = function (k, v) {
+    if (![...FILTER_KEYS, 'when', 'from', 'to'].includes(k)) return;
+    S.filters[k] = v;
+    if (k === 'when' && v === 'custom' && !S.filters.from && !S.filters.to) { const r = whenRange('30'); S.filters.from = r.from; S.filters.to = r.to; }
+    S.sel = []; render();
+  };
+  X.clearFilters = function () { for (const k of [...FILTER_KEYS, 'when', 'from', 'to']) S.filters[k] = ''; S.sel = []; render(); };
+  X.toggleFilters = function () { S.filtersOpen = !S.filtersOpen; render(); };
+  const lbl = (text, inner) => `<label class="fl" style="margin:0;display:flex;flex-direction:column;gap:4px">${text}${inner}</label>`;
+  // The period sits in the search bar itself, always in sight (the Admin's request, 2 Nov), not
+  // behind the funnel.
+  function datePart() {
+    const f = S.filters;
+    const opts = WHEN.map(([v, t]) => `<option value="${v}" ${f.when === v ? 'selected' : ''}>${v ? t : 'Registered: any time'}</option>`).join('');
+    const box = 'class="fi" style="width:auto;padding:7px 9px;flex:0 0 auto"';
+    return `<select ${box} id="qwhen" title="Registered = the day the merchant registered on MDM" onchange="MDM.setFilter('when',this.value)"${dateSet() ? ' data-on="1"' : ''}>${opts}</select>`.replace('flex:0 0 auto"', `flex:0 0 auto${dateSet() ? ';border-color:#DC2626' : ''}"`)
+      + (f.when === 'custom'
+        ? `<input ${box} type="date" aria-label="From" value="${esc(f.from)}" ${f.to ? `max="${esc(f.to)}"` : ''} onchange="MDM.setFilter('from',this.value)">`
+          + `<span class="muted" style="flex:0 0 auto">–</span>`
+          + `<input ${box} type="date" aria-label="To" value="${esc(f.to)}" ${f.from ? `min="${esc(f.from)}"` : ''} onchange="MDM.setFilter('to',this.value)">`
+        : '');
+  }
+  function filterPanel() {
+    const o = filterOptions(); const f = S.filters; const n = activeFilters().length;
+    const sel = (k) => lbl(FILTER_LABEL[k], `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setFilter('${k}',this.value)"><option value="">All</option>
+      ${o[k].map(([v, t]) => `<option value="${esc(v)}" ${f[k] === v ? 'selected' : ''} ${k === 'source' ? 'data-i18n="off"' : ''}>${esc(t)}</option>`).join('')}</select>`);
+    return `<div class="card" id="qfilters" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;padding:12px 14px;margin:-4px 0 14px">
+      ${FILTER_KEYS.map(sel).join('')}<span style="flex:1"></span>
+      <button class="btn btn-ghost btn-sm" onclick="MDM.clearFilters()" ${n ? '' : 'disabled title="No filter is set"'}>Clear filters</button>
+      <div class="tiny muted" style="flex-basis:100%">Registered = the day the merchant registered on MDM (or wrote to us first, for a merchant who came in here).</div></div>`;
+  }
+  function filterLine() {
+    return `<div class="tiny muted" id="qfilters-line" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-6px 0 12px">
+      <span>Filters:</span>${activeFilters().map((k) => `<span class="chip"><span>${FILTER_LABEL[k]}</span> · <span ${k === 'source' || (k === 'when' && S.filters.when === 'custom') ? 'data-i18n="off"' : ''}>${esc(filterText(k))}</span></span>`).join('')}
+      <button class="btn btn-ghost btn-sm" onclick="MDM.clearFilters()">Clear filters</button></div>`;
+  }
+  const funnel = (html, toastText) => {
+    const n = activeFilters().length;
+    html = html.replace(`<button class="icon-btn red" onclick="toast('${toastText}')">`,
+      `<button class="icon-btn red" title="${toastText}" onclick="MDM.toggleFilters()" style="position:relative${S.filtersOpen ? ';outline:3px solid rgba(220,38,38,.25)' : ''}">`
+      + (n ? `<span class="num" style="position:absolute;top:-6px;inset-inline-end:-6px;background:#111;color:#fff;border-radius:999px;font-size:10px;font-weight:700;padding:1px 5px;line-height:14px">${n}</span>` : ''));
+    // the period control right after the funnel button
+    const at = html.indexOf('onclick="MDM.toggleFilters()"');
+    const end = at < 0 ? -1 : html.indexOf('</button>', at);
+    if (end >= 0) html = html.slice(0, end + 9) + datePart() + html.slice(end + 9);
+    html = html.replace('<div class="tbl-wrap">', searchBanner() + '<div class="tbl-wrap">');
+    if (S.filtersOpen) html = html.replace('<div class="tbl-wrap">', filterPanel() + '<div class="tbl-wrap">');
+    else if (n) html = html.replace('<div class="tbl-wrap">', filterLine() + '<div class="tbl-wrap">');
+    return html;
+  };
+  const protoViewQueue = window.viewQueue;
+  window.viewQueue = function () {
+    return funnel(protoViewQueue(), 'Filters — country, source, channel, window state, owner')
+      .replace(/onclick="S\.view='(pv_[^']+)';render\(\)"/g, (_m, k) => `onclick="MDM.openView('${k}')"`);
+  };
+
+  // ───────────── deleting leads (Admin, All Leads) ─────────────
+  // The merchant is deleted here only — MDM is never touched — and the sync leaves it out until it is
+  // restored on the Integrations page (the Admin's choice, 2 Nov). At most 200 per run, a written
+  // reason, the number typed to confirm; each row is reported on its own, one audit entry per run.
+  const MAX_DELETE = 200;
+  const canDelete = () => X.grants?.['records.delete'] === true;
+  const protoViewAdminLeads = window.viewAdminLeads;
+  window.viewAdminLeads = function () {
+    let html = funnel(protoViewAdminLeads(), 'Filters — country, source, channel, owner, window state, age')
+      .replace(/onclick="S\.view='(pv_[^']+)';S\.sel=\[\];render\(\)"/g, (_m, k) => `onclick="MDM.openView('${k}')"`);
+    if (S.sel.length) {
+      const over = S.sel.length > MAX_DELETE;
+      const del = canDelete()
+        ? (over
+          ? `<span style="display:inline-flex;flex-direction:column;gap:2px"><button class="btn btn-ghost btn-sm" disabled style="color:#B42318">${ic('x', 12)} Delete</button><span class="why">at most ${MAX_DELETE} per run — narrow the filter</span></span>`
+          : `<button class="btn btn-ghost btn-sm" style="color:#B42318" onclick="MDM.askDelete('leads')">${ic('x', 12)} Delete</button>`)
+        : `<span style="display:inline-flex;flex-direction:column;gap:2px"><button class="btn btn-ghost btn-sm" disabled>${ic('x', 12)} Delete</button><span class="why">reserved to the Administrator</span></span>`;
+      html = html.replace('<button class="btn btn-ghost btn-sm" onclick="S.sel=[];render()">Clear</button>', `${del}\n    <button class="btn btn-ghost btn-sm" onclick="S.sel=[];render()">Clear</button>`);
+    }
+    return html;
+  };
+  X.askDelete = function (kind) {
+    const ids = S.sel.slice(); const n = ids.length;
+    if (!n) return;
+    const sellers = kind === 'leads' ? ids.map((id) => S.leads.find((l) => l.id === id)).filter((l) => l && l.status === 'activated').length : 0;
+    openModal(`<div class="modal-h">${ic('x', 18)}<h3>Delete ${n} lead${n === 1 ? '' : 's'}</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b">
+        <div class="banner bn-amber tiny">${ic('shield', 14)}<div>Each merchant is deleted from this app: contact, conversation and messages, tickets and tasks${sellers ? ` — <b>${sellers}</b> of them are also sellers in a book, and their seller record goes too` : ''}. MDM keeps them; the sync leaves them out until you restore them on the Integrations page. This cannot be undone here.</div></div>
+        <label class="fl" style="margin-top:12px">Reason (written to the audit log)</label>
+        <textarea class="fi" id="m-note" rows="2" oninput="MDM.deleteReady(${n})"></textarea>
+        <label class="fl" style="margin-top:10px">Type <b class="num">${n}</b> to confirm</label>
+        <input class="fi" id="m-confirm" inputmode="numeric" autocomplete="off" oninput="MDM.deleteReady(${n})">
+      </div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" id="modal-go" disabled onclick="MDM.doDelete('${kind}')">Delete ${n}</button></div>`);
+  };
+  X.deleteReady = function (n) {
+    const ok = !!(document.getElementById('m-note')?.value || '').trim() && (document.getElementById('m-confirm')?.value || '').trim() === String(n);
+    const b = document.getElementById('modal-go'); if (b) b.disabled = !ok;
+  };
+  X.doDelete = function (kind) {
+    const ids = S.sel.slice(); const reason = (document.getElementById('m-note')?.value || '').trim();
+    closeModal();
+    act(async () => {
+      const r = await API.post('/api/admin/delete', { kind, ids, reason });
+      S.sel = [];
+      const bad = r.results.filter((x) => !x.ok);
+      toast(`${r.done} deleted${bad.length ? ` · ${bad.length} not deleted: ${bad[0].reason}` : ''}`, bad.length ? 'warn' : 'ok');
+    });
+  };
+
+  // ───────────── audit filter (Admin) ─────────────
+  // The prototype's button: "Filtered by actor, entity, kind and date range". The log is read from
+  // the server with the actor, entity and dates; the kind is the prototype's own four chips.
+  S.auditF = S.auditF || { actor: '', entity: '', kind: '', when: '', from: '', to: '', open: false, loading: false };
+  const ENTITIES = [['ticket', 'Ticket'], ['contact', 'Contact'], ['seller', 'Seller'], ['conversation', 'Conversation'], ['user', 'User'], ['config', 'Configuration'], ['bulk', 'Bulk run']];
+  const KINDS = [['op', 'operation'], ['auto', 'automation'], ['cfg', 'configuration']];
+  X.auditAll = null; // the rows read for the filter (null = the console's default 100)
+  async function loadAudit() {
+    const a = S.auditF; const r = whenRange(a.when, a.from, a.to);
+    const qs = new URLSearchParams({ limit: '500' });
+    if (a.actor === 'system') qs.set('actor', 'system'); else if (a.actor) qs.set('actorId', a.actor);
+    if (a.entity) qs.set('entityType', a.entity);
+    if (r.from) qs.set('from', new Date(r.from + 'T00:00:00').toISOString());
+    if (r.to) qs.set('to', new Date(r.to + 'T23:59:59.999').toISOString());
+    a.loading = true; render();
+    try {
+      const rows = await API.get('/api/admin/audit?' + qs);
+      AUDIT.length = 0;
+      for (const e of rows) {
+        const kind = e.entityType === 'config' ? 'cfg' : e.actorId ? 'op' : 'auto';
+        if (a.kind && a.kind !== kind) continue;
+        AUDIT.push({ at: new Date(e.createdAt), who: e.actorId ? nameOf(e.actorId) : 'Rule (automation)',
+          what: `${esc(e.action)} <code>${esc(e.entityType)} ${esc(String(e.entityId).slice(-6))}</code>${e.reason ? ' — ' + esc(e.reason) : ''}`, kind });
+      }
+      X.auditFiltered = true;
+    } catch (e) { fail(e); } finally { a.loading = false; render(); }
+  }
+  const auditSet = () => !!(S.auditF.actor || S.auditF.entity || S.auditF.kind || dateSetFor(S.auditF));
+  const dateSetFor = (a) => { const r = whenRange(a.when, a.from, a.to); return !!(r.from || r.to); };
+  X.setAudit = function (k, v) {
+    S.auditF[k] = v;
+    if (k === 'when' && v === 'custom' && !S.auditF.from && !S.auditF.to) { const r = whenRange('30'); S.auditF.from = r.from; S.auditF.to = r.to; }
+    if (auditSet()) loadAudit(); else { X.auditFiltered = false; reload().then(render); }
+  };
+  X.clearAudit = function () { Object.assign(S.auditF, { actor: '', entity: '', kind: '', when: '', from: '', to: '' }); X.auditFiltered = false; reload().then(render); };
+  X.toggleAudit = function () { S.auditF.open = !S.auditF.open; render(); };
+  const protoViewAudit = window.viewAudit;
+  window.viewAudit = function () {
+    window.AUDIT_SHOW = X.auditFiltered ? 200 : 14;
+    let html = protoViewAudit();
+    const a = S.auditF;
+    html = html.replace(`<button class="btn btn-ghost" onclick="toast('Filtered by actor, entity, kind and date range')">`,
+      `<button class="btn btn-ghost" onclick="MDM.toggleAudit()" title="Filtered by actor, entity, kind and date range"${a.open ? ' style="outline:3px solid rgba(220,38,38,.2)"' : ''}>`);
+    if (a.open) {
+      const sel = (k, label, opts) => lbl(label, `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setAudit('${k}',this.value)"><option value="">All</option>${opts.map(([v, t]) => `<option value="${esc(v)}" ${a[k] === v ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`);
+      const people = [['system', 'Rule (automation)'], ...[...X.userById.values()].sort((x, y) => x.name.localeCompare(y.name)).map((u) => [u.id, u.name])];
+      const when = lbl('Date', `<select class="fi" style="min-width:150px;padding:6px 8px" onchange="MDM.setAudit('when',this.value)">${WHEN.map(([v, t]) => `<option value="${v}" ${a.when === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`)
+        + (a.when === 'custom' ? lbl('From', `<input class="fi" type="date" style="padding:5px 8px" value="${esc(a.from)}" onchange="MDM.setAudit('from',this.value)">`)
+          + lbl('To', `<input class="fi" type="date" style="padding:5px 8px" value="${esc(a.to)}" onchange="MDM.setAudit('to',this.value)">`) : '');
+      const panel = `<div class="card" id="afilters" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;padding:12px 14px;margin:0 0 14px">
+        ${sel('actor', 'Actor', people)}${sel('entity', 'Entity', ENTITIES)}${sel('kind', 'Kind', KINDS)}${when}<span style="flex:1"></span>
+        ${a.loading ? '<span class="tiny muted">Loading…</span>' : X.auditFiltered ? `<span class="tiny muted"><span class="num">${AUDIT.length}</span> <span>entries</span></span>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="MDM.clearAudit()" ${auditSet() ? '' : 'disabled title="No filter is set"'}>Clear filters</button></div>`;
+      html = html.replace('<div class="grid2">', panel + '<div class="grid2">');
+    }
+    return html;
+  };
+
+  // ───────────── controls the prototype left as notes ─────────────
+  // Each one does what the specs define, or is drawn disabled with its reason written under it
+  // (OA 6.2) — never a pop-up note. The reasons are in /assets/controls.js.
+  const MAX_BULK = 200; // OA 13.2: the bulk ceiling
+  const canAdminView = () => API.canSeeAdmin(X.me?.role);
+  const denied = () => CTL.denied(X.me.role);
+  // Sidebar. OmniDesk: the OmniDesk Monitor is this app's view of every conversation, for the
+  // roles that may open it (OA 9.2); the full inbox is the parent platform's.
+  X.navOmni = () => (canAdminView()
+    ? `<button class="nav-item" onclick="go('#/a/monitor')"><span class="nav-ico" style="background:#EEF2FF;color:#4F46E5">${ic('chat', 15)}</span> OmniDesk <span class="chev">${ic('chev', 13)}</span></button>`
+    : CTL.navOff('chat', 'OmniDesk', CTL.WHY.omni));
+  // "Account Managers" and "Platform Settings": the Admin sees every seller and manager (AM 9.1) and
+  // runs the integrations; other roles have neither.
+  X.navAm = () => (X.grants['seller.view'] === true ? CTL.navTo('users', 'Account Managers', '/am#/a/ops', '', 'adm') : CTL.navOff('users', 'Account Managers', denied()));
+  X.navSettings = () => (X.grants['integrations.manage'] === true ? CTL.navTo('cog', 'Platform Settings', '/integrations', '', 'adm') : CTL.navOff('cog', 'Platform Settings', denied()));
+  // "Open in OmniDesk": the same conversation in the Monitor (OA 6.4: one conversation, two views).
+  X.omniBtn = (id) => (canAdminView()
+    ? `<button class="btn btn-ghost btn-sm" onclick="MDM.openMonitor('${id}')">${ic('link', 12)} Open in OmniDesk</button>`
+    : CTL.off('btn-ghost btn-sm', 'link', 'Open in OmniDesk', CTL.WHY.omniSame));
+  X.openMonitor = function (id) {
+    const l = lead(id); if (!l) return;
+    S.monF = l.stage === 'activated' ? 'activated' : 'all'; S.monSel = id;
+    go('#/a/monitor');
+  };
+  // Export (Appendix A: Admin; a Manager with an Admin's approval; nobody else).
+  X.exportBtn = (kind) => {
+    const g = X.grants['data.export'];
+    if (g === true) return `<button class="btn btn-ghost" onclick="MDM.exportCsv('${kind}')">${ic('file', 14)} Export</button>`;
+    return CTL.off('btn-ghost', 'file', 'Export', g === 'approval' ? 'Needs approval from an Admin.' : denied());
+  };
+  X.releaseBtn = () => {
+    const held = S.leads.filter((l) => !l.ownerId && isOpen(l)).length;
+    const why = X.grants['onboarding.assign_over_capacity'] !== true ? denied() : !held ? 'Nothing is being held right now' : null;
+    return why ? CTL.off('btn-ghost', 'users', 'Release held leads', why) : `<button class="btn btn-ghost" onclick="assignAll()">${ic('users', 14)} Release held leads</button>`;
+  };
+  // All Leads selection bar. Reassign and Change status need "Bulk internal changes"; Add tag waits
+  // for the tag list; bulk template sends need WhatsApp (Appendix A: "Bulk outbound messaging").
+  X.bulkButtons = () => {
+    const can = X.grants['onboarding.bulk_internal'] === true;
+    return (can
+      ? `<button class="btn btn-ghost btn-sm" onclick="bulkAssign()">${ic('users', 12)} Reassign</button>
+    <button class="btn btn-ghost btn-sm" onclick="bulkStatus()">${ic('spark', 12)} Change status</button>`
+      : CTL.off('btn-ghost btn-sm', 'users', 'Reassign', denied()) + CTL.off('btn-ghost btn-sm', 'spark', 'Change status', denied()))
+      + CTL.off('btn-ghost btn-sm', 'file', 'Add tag', can ? CTL.WHY.tags : denied())
+      + CTL.off('btn-ghost btn-sm', 'wa', 'Bulk template send', X.grants['onboarding.bulk_outbound'] === true ? CTL.WHY.whatsapp : denied());
+  };
+  // Configuration → Team: an agent is a person imported from MDM with the Onboarding agent role.
+  X.addAgentBtn = () => (X.grants['integrations.manage'] === true
+    ? `<button class="btn btn-ghost btn-sm" title="Import from People on MDM, with the role Onboarding agent" onclick="location.href='/integrations#staff'">${ic('plus', 12)} Add agent</button>`
+    : CTL.off('btn-ghost btn-sm', 'plus', 'Add agent', denied()));
+  // Configuration → Statuses: the service's own state machine (OA 2.4, 2.5).
+  const ST_LABEL = { new: 'New', failed_to_contact: 'Failed to Contact', prequalified: 'Pre-qualified', qualified: 'Qualified', activated: 'Activated', cold_lead: 'Cold Lead', junk_lead: 'Junk Lead' };
+  X.statusRows = () => (Array.isArray(X.stateMachine) ? X.stateMachine.map((r) => [ST_LABEL[r.status] || r.status,
+    r.to.length ? r.to.map((t) => ST_LABEL[t] || t).join(' · ') + (r.category === 'closed' ? ' (reopen)' : '') : '— (terminal for this ticket type)',
+    r.category, r.required]) : null);
+  // Configuration → Team: the live assignment settings (OA 4.2, Appendix D) and business hours (3.4).
+  const DAY = { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' };
+  const WEEK = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  function daysText(v) {
+    const ds = String(v || '').split(',').map((d) => d.trim().toLowerCase()).filter((d) => DAY[d]);
+    if (!ds.length) return '—';
+    const ix = ds.map((d) => WEEK.indexOf(d));
+    const run = ix.every((n, i) => !i || n === ix[i - 1] + 1);
+    return run && ds.length > 2 ? `${DAY[ds[0]]}–${DAY[ds[ds.length - 1]]}` : ds.map((d) => DAY[d]).join(', ');
+  }
+  X.teamLine = function (k) {
+    const c = X.config || {};
+    if (k === 'strategy') {
+      if (c['oa.assignment_strategy'] !== 'most_free_minutes') return esc(c['oa.assignment_strategy'] ?? '—');
+      return c['oa.assignment_skill'] === 'contact.country' ? "Most free minutes on the lead's market — falls back to the whole team" : 'Most free minutes across the whole team';
+    }
+    if (k === 'tiebreak') return c['oa.assignment_tiebreak'] === 'fewest_open_leads' ? 'Agent with fewest open leads' : esc(c['oa.assignment_tiebreak'] ?? '—');
+    if (k === 'hours') return `${daysText(c['oa.business_days'])} ${esc(c['oa.business_open'] ?? '')}–${esc(c['oa.business_close'] ?? '')} · ${esc(c['oa.business_timezone'] ?? '')}`;
+    if (k === 'outOfHours') return 'Held with reason "outside business hours", assigned at the first sweep after the shift opens';
+    return '—';
+  };
+  // Configuration → Roles & permissions: the Onboarding Agent role's grants, row by row as Appendix A
+  // lists them. Read-only here until the client decides whether they may be switched.
+  const SCOPE = { own: 'own', team: 'team, read', request: 'request only', own_gated: 'own, gated', own_reason: 'own, with reason', with_reason: 'with reason', escalate: 'escalate', approval: 'approval', own_contacts: 'own contacts' };
+  window.cfgPerm = function () {
+    const rows = Array.isArray(X.roleGrants) ? X.roleGrants : null;
+    const v = (key) => rows?.find((r) => r.key === key)?.value;
+    const on = rows ? rows.filter((r) => r.value !== false).length : 0;
+    return `<div class="grid2">
+    <div class="card">
+      <div class="card-h">${ic('shield', 16)}<h3>Onboarding Agent — role grants</h3><span class="sp"></span>
+        <span class="chip"><span class="num">${on}</span> <span>of</span> <span class="num">${rows ? rows.length : 0}</span></span></div>
+      <div class="tiny muted" style="margin-bottom:6px">Permissions are granted to roles, never to a named person. There is no path for a personal exception.</div>
+      <div class="why" style="display:block;margin-bottom:8px">${CTL.WHY.perms}</div>
+      ${rows ? rows.map((r) => `<div class="cfgrow" style="padding:9px 0">
+        <div class="k"><div class="t" style="font-size:12.5px">${esc(r.label)}</div></div>
+        ${typeof r.value === 'string' ? `<span class="chip">${SCOPE[r.value] || esc(r.value)}</span>` : ''}
+        <span class="sw ${r.value !== false ? 'on' : ''}" role="switch" aria-checked="${r.value !== false}" aria-disabled="true" style="cursor:not-allowed;opacity:.55"></span></div>`).join('')
+        : `<div class="tiny muted">${denied()}</div>`}
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card">
+        <div class="card-h">${ic('spark', 16)}<h3>What these choices do</h3></div>
+        <div class="banner bn-blue" style="margin-bottom:10px">${ic('shield', 15)}
+          <div><b>Enforced in the service, not the interface.</b> Removing a button is not a permission —
+          the same call made directly by an unauthorised role is rejected.</div></div>
+        <div class="kv"><span class="k">View all onboarding tickets</span><span class="v">${v('onboarding.view_all') ? 'On — agents see the team queue read-only' : 'Off — agents see only their own'}</span></div>
+        <div class="kv"><span class="k">Reassign / transfer</span><span class="v">${v('onboarding.reassign') === true ? 'On' : 'Off — agents request, a shift lead decides'}</span></div>
+        <div class="kv"><span class="k">Reject seller</span><span class="v">${v('onboarding.reject') === true ? 'On' : 'Off — suspected fraud escalates to the Commercial Director'}</span></div>
+        <div class="kv"><span class="k">View reports</span><span class="v">${v('reports.view') === 'own' ? 'Own scope only' : v('reports.view') ? 'On' : 'Off'}</span></div>
+        <div class="kv"><span class="k">Order card fields</span><span class="v">${v('finance.view_cost') ? 'Shown' : 'Cost, margin and settlement withheld'}</span></div>
+      </div>
+      <div class="card">
+        <div class="card-h">${ic('users', 16)}<h3>Temporary elevation</h3></div>
+        <p class="tiny muted" style="margin:0 0 12px">Cover for leave without permanently widening a role. The elevation expires by itself and the reversion is audited.</p>
+        ${X.elevationsHTML()}
+      </div>
+    </div>
+  </div>`;
+  };
+  // Performance → "Open" on an agent: All Leads showing only that agent's leads.
+  X.openAgent = function (id) {
+    for (const k of [...FILTER_KEYS, 'when', 'from', 'to']) S.filters[k] = '';
+    S.filters.owner = id; S.view = 'all'; S.q = ''; S.sel = [];
+    go('#/a/leads');
+  };
+  // Top search (Enter): the list the viewer works from, with a line that says what was searched.
+  window.globalSearch = function (q) {
+    q = String(q || '').trim(); if (!q) return;
+    S.q = q; S.view = 'all'; S.sel = [];
+    go(S.role === 'admin' ? '#/a/leads' : '#/queue');
+  };
+  function searchBanner() {
+    if (!S.q) return '';
+    return `<div class="banner bn-slate tiny" id="search-scope" style="margin:-4px 0 12px;align-items:center">${ic('search', 14)}
+      <div><span>Results for</span> “<span data-i18n="off">${esc(S.q)}</span>” — <span>searched every onboarding lead you can open, by name, phone, store, contact code and ticket. Conversations, orders and articles are not searched.</span></div>
+      <button class="btn btn-ghost btn-sm" style="margin-inline-start:auto;flex:0 0 auto" onclick="S.q='';render()">Clear search</button></div>`;
+  }
+
+  // ───────────── personal saved views (OA 6.3) ─────────────
+  // "Save this view" stores the current view, its filters and its sort under a name the agent picks.
+  // It shows under "Mine" with a live count; opening it puts its filters and sort back. Only its
+  // owner sees it, and only its owner deletes it. No column set: the prototype has no column picker.
+  X.views = [];
+  async function loadViews() {
+    X.views = await API.get('/api/views?module=oa').catch(() => []);
+    for (let i = VIEWS.length - 1; i >= 0; i--) if (String(VIEWS[i].k).startsWith('pv_')) VIEWS.splice(i, 1);
+    for (const v of X.views) {
+      const base = VIEWS.find((x) => x.k === v.base) || VIEWS.find((x) => x.k === 'all');
+      const f = { country: '', source: '', channel: '', win: '', owner: '', when: '', from: '', to: '', ...v.filters };
+      VIEWS.push({ k: 'pv_' + v.id, g: 'me', label: esc(v.name), f: (l) => base.f(l) && passesFilters(l, f) });
+    }
+    if (String(S.view).startsWith('pv_') && !VIEWS.find((x) => x.k === S.view)) S.view = 'mine';
+  }
+  const savedOf = (k) => X.views.find((v) => 'pv_' + v.id === k);
+  X.saveViewBtn = function () {
+    if (X.grants['macro.author_personal'] !== true) return CTL.off('btn-ghost', 'plus', 'Save this view', denied());
+    const cur = savedOf(S.view);
+    return `<button class="btn btn-ghost" onclick="MDM.saveView()">${ic('plus', 14)} Save this view</button>`
+      + (cur ? ` <button class="btn btn-ghost" onclick="MDM.deleteView('${S.view}')">${ic('x', 14)} Delete this view</button>` : '');
+  };
+  X.openView = function (k) {
+    const v = savedOf(k); if (!v) return;
+    S.view = k; S.sort = v.sort === 'newest' ? 'newest' : 'due'; S.sel = [];
+    for (const key of [...FILTER_KEYS, 'when', 'from', 'to']) S.filters[key] = v.filters[key] || '';
+    render();
+  };
+  const baseOf = () => savedOf(S.view)?.base ?? (VIEWS.find((x) => x.k === S.view) ? S.view : 'all');
+  X.saveView = function () {
+    const base = baseOf(); const n = activeFilters();
+    openModal(`<div class="modal-h">${ic('plus', 18)}<h3>Save this view</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b">
+        <label class="fl">Name</label>
+        <input class="fi" id="m-name" maxlength="60" autocomplete="off" oninput="document.getElementById('modal-go').disabled=!this.value.trim()">
+        <div class="tiny muted" style="margin-top:12px;line-height:1.9">
+          <div><span>Starts from</span>: <b>${viewDef(base).label}</b></div>
+          <div><span>Filters</span>: ${n.length ? n.map((k) => `<span class="chip"><span>${FILTER_LABEL[k]}</span> · <span ${k === 'source' || (k === 'when' && S.filters.when === 'custom') ? 'data-i18n="off"' : ''}>${esc(filterText(k))}</span></span>`).join(' ') : '<span>none</span>'}</div>
+          <div><span>Sorted by</span>: <span>${S.sort === 'newest' ? 'newest registration' : 'next action due'}</span></div>
+        </div>
+        <div class="tiny muted" style="margin-top:8px">Only you see it, under “Mine”. Its count is live.</div>
+      </div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" id="modal-go" disabled onclick="MDM.doSaveView()">Save</button></div>`);
+    setTimeout(() => document.getElementById('m-name')?.focus(), 0);
+  };
+  X.doSaveView = function () {
+    const name = (document.getElementById('m-name')?.value || '').trim(); if (!name) return;
+    const filters = {}; for (const k of [...FILTER_KEYS, 'when', 'from', 'to']) if (S.filters[k]) filters[k] = S.filters[k];
+    const base = baseOf(); const sort = S.sort === 'newest' ? 'newest' : 'due';
+    closeModal();
+    act(async () => { const v = await API.post('/api/views', { module: 'oa', name, base, filters, sort }); S.view = 'pv_' + v.id; }, 'View saved — under “Mine”');
+  };
+  X.deleteView = function (k) {
+    const v = savedOf(k); if (!v) return;
+    openModal(`<div class="modal-h">${ic('x', 18)}<h3>Delete this view</h3><span style="flex:1"></span>
+        <button class="tb-btn" onclick="closeModal()">${ic('x', 16)}</button></div>
+      <div class="modal-b"><p style="margin:0">“<span data-i18n="off">${esc(v.name)}</span>” — <span>only the saved view goes. No lead changes.</span></p></div>
+      <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-red" onclick="MDM.doDeleteView('${v.id}')">Delete</button></div>`);
+  };
+  X.doDeleteView = function (id) {
+    closeModal();
+    act(async () => { await API.del(`/api/views/${id}`); S.view = 'mine'; }, 'View deleted');
+  };
 
   // ───────────── boot ─────────────
   async function boot() {
     const me = await API.me();
     X.me = me.user; X.grants = me.grants;
     ME = me.user.id; // eslint-disable-line no-global-assign
-    if (me.user.role === 'ACCOUNT_MANAGER') { location.href = '/am'; return; }
+    if (['ACCOUNT_MANAGER', 'HEAD_OF_AM'].includes(me.user.role)) { location.href = '/am'; return; }
     S.role = API.canSeeAdmin(me.user.role) && me.user.role !== 'OA_AGENT' && location.hash.startsWith('#/a/') ? 'admin' : (me.user.role === 'OA_AGENT' ? 'agent' : (location.hash.startsWith('#/a/') ? 'admin' : 'agent'));
     X.macros = await API.get('/api/oa/macros').catch(() => []);
     await reload();

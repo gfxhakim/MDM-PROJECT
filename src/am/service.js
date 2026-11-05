@@ -5,7 +5,7 @@ import { prisma, inTx } from '../db.js';
 import { logEvent } from '../services/audit.js';
 import { getLiveConfig } from '../config/service.js';
 import { grant } from '../auth/permissions.js';
-import { denialReason, findSellerInScope, sellerCan, sellerWhere } from '../auth/scope.js';
+import { AM_ADMINS, denialReason, findSellerInScope, sellerCan, sellerWhere } from '../auth/scope.js';
 import { badRequest, forbidden, HttpError, notFound } from '../http/errors.js';
 import { notify, notifyRole } from '../core/notifications.js';
 import { addSystemLine } from '../core/conversations.js';
@@ -25,6 +25,7 @@ function sellerView(s) {
   return {
     id: s.id, mdmRef: s.mdmRef, contactId: s.contactId, name: s.contact?.name, nameAr: s.contact?.nameAr, phone: s.contact?.phone,
     market: s.market, joinStatus: s.joinStatus, activatedAt: s.activatedAt, assignedAccountManagerId: s.assignedAccountManagerId,
+    registeredAt: s.contact?.mdmCreatedAt ?? s.contact?.createdAt ?? null, // when the merchant entered MDM (date filters)
     stage: s.stage, healthScore: s.healthScore, healthBand: s.healthBand, healthStale: s.healthStale, healthComputedAt: s.healthComputedAt,
     metrics: {
       weeklyOrders: json(s.weeklyOrders, []), totalOrders: s.totalOrders, deliveryRate: s.deliveryRate, returnRate: s.returnRate,
@@ -151,7 +152,7 @@ export async function escalateTask(user, taskId, reason, db = prisma) {
     await logEvent({ actorId: user.id, entityType: 'ticket', entityId: t.id, action: 'am_task.escalated',
       before: { priority: t.priority }, after: { priority: updated.priority, escalatesTo: ALERTS[t.alertKey]?.escalatesTo ?? null }, reason }, tx);
     // The next owner is told (AC-13); ownership and the conversation are untouched.
-    await notifyRole('ADMIN', { kind: 'am.task_escalated', title: `Escalated: ${t.title} — ${seller.contact?.name ?? seller.mdmRef}`, body: reason.trim(), ticketId: t.id, dedupeKey: `am.escalated:${t.id}` }, tx);
+    await notifyRole(AM_ADMINS, { kind: 'am.task_escalated', title: `Escalated: ${t.title} — ${seller.contact?.name ?? seller.mdmRef}`, body: reason.trim(), ticketId: t.id, dedupeKey: `am.escalated:${t.id}` }, tx);
     return updated;
   });
 }
@@ -222,9 +223,9 @@ export async function reassignSellers(user, sellerIds, toManagerId, reason, db =
   return { results, succeeded: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length };
 }
 
-/** Churn is set by hand until D-04 gives the save task a structured outcome (AM 5.7). Admin only. */
+/** Churn is set by hand until D-04 gives the save task a structured outcome (AM 5.7). The AM module's Administrator only. */
 export async function markChurned(user, sellerId, reason, db = prisma) {
-  if (user.role !== 'ADMIN') throw forbidden('Churn is marked by an Admin until the save outcome is structured (D-04).');
+  if (!AM_ADMINS.includes(user.role)) throw forbidden('Churn is marked by the Head of AM or an Admin until the save outcome is structured (D-04).');
   if (!filled(reason)) throw badRequest('A churn reason is required.');
   const s = await findSellerInScope(user, sellerId, db);
   if (s.churnedAt) throw new HttpError(409, 'already_churned', 'Already marked churned.');
@@ -235,7 +236,7 @@ export async function markChurned(user, sellerId, reason, db = prisma) {
 
 export async function capacityView(user, db = prisma) {
   const { values: c } = await getLiveConfig(db);
-  const managers = user.role === 'ADMIN'
+  const managers = AM_ADMINS.includes(user.role)
     ? await db.user.findMany({ where: { role: 'ACCOUNT_MANAGER', active: true }, orderBy: { name: 'asc' } })
     : [await db.user.findUnique({ where: { id: user.id } })];
   return Promise.all(managers.map(async (m) => ({ managerId: m.id, name: m.name, markets: json(m.markets, []), ...(await managerCapacity(m, c, new Date(), db)) })));
@@ -304,7 +305,7 @@ export async function requestTransfer(user, sellerId, reason, db = prisma) {
 }
 
 async function notifyAdmins(title, body, dedupeKey, db) {
-  const admins = await db.user.findMany({ where: { role: 'ADMIN', active: true }, select: { id: true } });
+  const admins = await db.user.findMany({ where: { role: { in: AM_ADMINS }, active: true, removedAt: null }, select: { id: true } });
   for (const a of admins) await notify({ userId: a.id, kind: 'am.transfer_request', title, body, dedupeKey }, db);
 }
 
@@ -344,7 +345,11 @@ export async function consoleBundle(user, { now = new Date() } = {}, db = prisma
         tasks: (tasksBy.get(s.id) ?? []).map((t) => taskView(user, t, s, c)),
         playbook: STEPS.map((step) => {
           const tick = (ticksBy.get(s.id) ?? []).find((x) => x.stepDay === step.day);
-          return { day: step.day, title: step.title, gate: step.gate, gateOpen: gateOpen(step, s), tickedAt: tick?.tickedAt ?? null };
+          const open = gateOpen(step, s); const can = sellerCan(user, s, 'playbook.tick');
+          // the same verdict getSeller gives, so the console draws each step as the server will judge it (AC-14)
+          return { day: step.day, title: step.title, gate: step.gate, gateOpen: open, tickedAt: tick?.tickedAt ?? null, tickedById: tick?.tickedById ?? null,
+            canTick: !tick?.tickedAt && open && can.allowed,
+            reason: tick?.tickedAt ? 'Already complete.' : !can.allowed ? can.reason : open ? null : `Gate not met: ${step.gate}.` };
         }),
         conversation: conv ? { id: conv.id, channel: conv.channel, lastInboundAt: conv.lastInboundAt, takenOverById: conv.takenOverById, messages: conv.messages } : null,
         events: evBy.get(s.id) ?? [],

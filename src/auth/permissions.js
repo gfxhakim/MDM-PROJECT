@@ -16,7 +16,7 @@
 //   'approval'    may request; executes once a holder approves
 //   'take_over'   only after taking the conversation over (Admin monitoring)
 
-export const ROLES = ['OA_AGENT', 'SHIFT_LEAD', 'MANAGER', 'ADMIN', 'ACCOUNT_MANAGER', 'READ_ONLY'];
+export const ROLES = ['OA_AGENT', 'SHIFT_LEAD', 'MANAGER', 'ADMIN', 'ACCOUNT_MANAGER', 'HEAD_OF_AM', 'READ_ONLY'];
 
 const R = (OA_AGENT, SHIFT_LEAD, MANAGER, ADMIN, ACCOUNT_MANAGER, READ_ONLY) =>
   ({ OA_AGENT, SHIFT_LEAD, MANAGER, ADMIN, ACCOUNT_MANAGER, READ_ONLY });
@@ -52,6 +52,9 @@ const OA = {
   'audit.view':                   R(false, false, true, true, false, true),
   // Platform: connectors (MDM, WhatsApp, Yeastar) and the Zoho import. Admin only.
   'integrations.manage':          R(false, false, false, true, false, false),
+  // Deleting merchants (leads, sellers, contacts) from this app and removing accounts. Admin only;
+  // every run is one audit entry with the full list, and MDM is never touched.
+  'records.delete':               R(false, false, false, true, false, false),
 };
 
 // ─────────── Account management (AM Appendix A) ───────────
@@ -77,7 +80,36 @@ const AM = {
   // Financial writes, seller accept/reject in the AM module, parcel/fulfilment writes: no role, ever.
 };
 
+// ─────────── Head of AM ───────────
+// The AM module's Administrator (AM 9.1: "every seller, every account manager, the configuration
+// surface, the audit trail, and conversation monitoring"; the AM prototype's role switch calls it
+// "Head of AM", its role card "Head of Account Management"), as an account of its own. Scoped to the
+// account-management team the way OA 9.2 scopes the Onboarding Administrator to the onboarding team:
+//  - account management: exactly the Admin column of AM Appendix A;
+//  - onboarding: exactly what an account manager holds (the merchants they own), so the onboarding
+//    workspace stays the onboarding team's;
+//  - the audit trail: its account-management part (routes/admin.js);
+//  - platform settings (MDM connector, accounts, people on MDM) and deleting merchants stay the Admin's.
+for (const row of Object.values(OA)) row.HEAD_OF_AM = row.ACCOUNT_MANAGER;
+for (const row of Object.values(AM)) row.HEAD_OF_AM = row.ADMIN;
+OA['audit.view'].HEAD_OF_AM = true;
+
 export const MATRIX = Object.freeze({ ...OA, ...AM });
+
+// OA Appendix A, row by row in its own order and wording — what the Configuration screen's
+// "Roles & permissions" tab lists for a role.
+export const OA_APPENDIX_A = Object.freeze([
+  ['View own tickets', 'onboarding.view_own'], ['View all onboarding tickets', 'onboarding.view_all'],
+  ['Public reply to contact', 'onboarding.reply'], ['Internal note', 'onboarding.note'], ['Edit ticket properties', 'onboarding.edit'],
+  ['Run a macro', 'onboarding.macro'], ['Send approved template', 'onboarding.template'], ['Reassign / transfer', 'onboarding.reassign'],
+  ['Take over from monitor', 'onboarding.take_over'], ['Assign over capacity', 'onboarding.assign_over_capacity'],
+  ['Book walkthrough', 'onboarding.book_walkthrough'], ['Activate seller (accept)', 'onboarding.activate'], ['Reject seller', 'onboarding.reject'],
+  ['Reopen cold / junk', 'onboarding.reopen'], ['Bulk internal changes', 'onboarding.bulk_internal'], ['Bulk outbound messaging', 'onboarding.bulk_outbound'],
+  ['Block contact', 'contact.block'], ['Listen to call recordings', 'call.listen'], ['See cost / fee / margin', 'finance.view_cost'],
+  ['Author team macro / template', 'macro.author_team'], ['Author personal macro / view', 'macro.author_personal'],
+  ['Manage automation / cadence', 'automation.manage'], ['Manage roles & permissions', 'roles.manage'], ['View reports', 'reports.view'],
+  ['Export data', 'data.export'], ['View audit log', 'audit.view'],
+].map(([label, key]) => Object.freeze({ label, key })));
 
 /** The grant a role holds for a permission (false if unknown). */
 export function grant(role, permission) {

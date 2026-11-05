@@ -6,12 +6,24 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { COMMON_CONTROLS, OA_CONTROLS, AM_CONTROLS } from './controls.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 function replaceOnce(html, from, to, file) {
   if (!html.includes(from)) throw new Error(`${file}: expected snippet not found — the reference changed: ${from.slice(0, 60)}`);
   return html.replace(from, to);
+}
+// [from, to] replaces the first occurrence; [from, to, 'all'] every one (a snippet the reference
+// repeats, e.g. a sidebar item drawn by two copies of the same function).
+function applyAll(html, list, file) {
+  for (const [from, to, mode] of list) {
+    if (mode === 'all') {
+      if (!html.includes(from)) throw new Error(`${file}: expected snippet not found — the reference changed: ${from.slice(0, 60)}`);
+      html = html.split(from).join(to);
+    } else html = replaceOnce(html, from, to, file);
+  }
+  return html;
 }
 
 // The reference files are fragments (no <html>/<body>): wrap them, then append our scripts.
@@ -22,6 +34,8 @@ const TAIL = (adapter) => `
 <script src="/assets/i18n-ar.js"></script>
 <script src="/assets/presence.js"></script>
 <script src="/assets/toast.js"></script>
+<script src="/assets/controls.js"></script>
+<script src="/assets/mdm-record.js"></script>
 <script src="/assets/${adapter}"></script>
 </html>`;
 
@@ -30,8 +44,8 @@ const TAIL = (adapter) => `
 // module has no data yet — so nothing on screen is invented.
 const OA_REPLACEMENTS = [
   // exports: real CSV from the same numbers the screen shows (AC-OA-18)
-  ["onclick=\"toast('Exported — CSV export is permission-gated')\"", "onclick=\"MDM.exportCsv('performance')\""],
-  ["onclick=\"toast('Export — permission-gated, one audit entry')\"", "onclick=\"MDM.exportCsv('leads')\""],
+  ["<button class=\"btn btn-ghost\" onclick=\"toast('Exported — CSV export is permission-gated')\">${ic('file',14)} Export</button>", "${MDM.exportBtn('performance')}"],
+  ["<button class=\"btn btn-ghost\" onclick=\"toast('Export — permission-gated, one audit entry')\">${ic('file',14)} Export</button>", "${MDM.exportBtn('leads')}"],
   // collision detection: the demo flag → live presence (AC-OA-13)
   ["const collide = l.id==='L5';   // demo: another agent is looking at this one", 'const collide = Presence.watch(l.convId);'],
   ["${collide?`<div class=\"collide\">${ic('users',13)} Noor Al-Saadi is viewing this conversation right now.</div>`:''}",
@@ -79,7 +93,10 @@ function buildOa() {
   h = replaceOnce(h, "let S={leads:SEED.map(build),", "let S={leads:[],", file);
   h = replaceOnce(h, "try{const raw=localStorage.getItem(KEY); if(raw){const p=JSON.parse(raw); if(p&&p.leads&&p.leads.length) S.leads=p.leads;}}catch(e){}", '', file);
   h = replaceOnce(h, '/* =============== boot =============== */\nrender();', '/* boot: /assets/oa-adapter.js */', file);
+  // the audit card shows 14 entries; a filtered audit (the Filter button) shows up to 200
+  h = replaceOnce(h, '${AUDIT.slice(0,14).map(', '${AUDIT.slice(0,window.AUDIT_SHOW||14).map(', file);
   for (const [from, to] of [...COMMON_REPLACEMENTS, ...OA_REPLACEMENTS]) h = replaceOnce(h, from, to, file);
+  h = applyAll(h, [...COMMON_CONTROLS, ...OA_CONTROLS], file);
   return HEAD + h + TAIL('oa-adapter.js');
 }
 
@@ -122,6 +139,7 @@ function buildAm() {
   const file = 'reference/mdm-am-console_6.html';
   let h = readFileSync(join(root, file), 'utf8');
   for (const [from, to] of [...COMMON_REPLACEMENTS, ...AM_REPLACEMENTS]) h = replaceOnce(h, from, to, file);
+  h = applyAll(h, [...COMMON_CONTROLS, ...AM_CONTROLS], file);
   return HEAD + h + TAIL('am-adapter.js');
 }
 

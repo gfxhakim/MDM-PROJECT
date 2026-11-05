@@ -138,10 +138,11 @@ export async function resetOnReply(contactId, { now = new Date(), cfg } = {}, db
   if (!t) return null;
   // A brand-new ticket's own first message is not a reply to a cadence.
   if (t.attemptNo === 0 && t.followupNo === 0 && t.status === 'new') return null;
+  // exactly the effects 5.4 / App. B r7 list: both counters to 0, the guard set, due now, assignee told
   const updated = await changeTicket(db, t, {
-    attemptNo: 0, followupNo: 0, cadenceReset: true, dueAt: now, nextAttemptAt: null, nextFollowupAt: null,
+    attemptNo: 0, followupNo: 0, cadenceReset: true, dueAt: now, tags: JSON.stringify((json(t.tags) ?? []).filter((x) => x !== 'oa_followup_suppressed')),
   }, { action: 'ticket.cadence_reset', reason: 'r7 — inbound reply resets the cadence (once per ticket)' });
-  await notify({ userId: t.assigneeId, kind: 'oa.r7.replied', title: 'Lead replied', ticketId: t.id, dedupeKey: `oa.r7:${t.id}` }, db);
+  await notify({ userId: t.assigneeId, kind: 'oa.r7.replied', title: 'Lead replied', ticketId: t.id, dedupeKey: `oa.r7:${t.id}:${now.toISOString()}` }, db);
   return updated;
 }
 
@@ -154,7 +155,8 @@ export async function logCall(user, ticketId, outcome, note, { now = new Date(),
   return inTx(db, async (tx) => {
     const t = await forAction(user, ticketId, permission, tx);
     const max = c['oa.no_answer_max'];
-    const attemptNo = Math.min(t.attemptNo + 1, outcome === 'no_answer' ? max : t.attemptNo + 1);
+    // every logged call is an attempt (glossary, 6.5), capped at no_answer_max (5.2)
+    const attemptNo = Math.min(t.attemptNo + 1, max);
     let data;
     let defaultNote;
     if (outcome === 'no_answer') {
@@ -172,7 +174,8 @@ export async function logCall(user, ticketId, outcome, note, { now = new Date(),
     } else {
       const to = outcome === 'answered_strong' ? 'qualified' : 'prequalified';
       if (t.status !== to && !canTransition(t.status, to)) throw new HttpError(409, 'illegal_transition', `A ${t.status} lead cannot move to ${to}.`);
-      data = { attemptNo, status: to, nextAttemptAt: null, ...(outcome === 'answered_strong' ? { stage: 'walkthrough' } : {}) };
+      // the next action (book the walkthrough) is due now, as the prototype's applyOutcome sets it
+      data = { attemptNo, status: to, nextAttemptAt: null, dueAt: now, ...(outcome === 'answered_strong' ? { stage: 'walkthrough' } : {}) };
       defaultNote = outcome === 'answered_strong' ? 'Answered — strong lead.' : 'Answered — soft lead.';
     }
     const updated = await changeTicket(tx, t, data, { actorId: user.id, action: 'ticket.call_logged', reason: outcome });
@@ -182,6 +185,8 @@ export async function logCall(user, ticketId, outcome, note, { now = new Date(),
     }
     const conv = await conversationOf(t.contactId, tx);
     if (conv) await tx.message.create({ data: { conversationId: conv.id, direction: 'internal', kind: 'note', body: note?.trim() || defaultNote, authorUserId: user.id } });
+    // 5.5 Cutoff: "… reason logged, assignee notified"
+    if (data.status === 'cold_lead') await notify({ userId: t.assigneeId, kind: 'oa.r4.cold', title: `${t.contact?.name ?? 'Lead'} moved to Cold Lead`, body: defaultNote, ticketId: t.id, dedupeKey: `oa.r4:${t.id}:${now.toISOString()}` }, tx);
     return updated;
   });
 }
@@ -253,7 +258,7 @@ export async function bookWalkthrough(user, ticketId, { at, mode }, { now = new 
   if (!WALKTHROUGH_MODES.includes(mode)) throw badRequest(`mode must be one of ${WALKTHROUGH_MODES.join(', ')}.`);
   return inTx(db, async (tx) => {
     const t = await forAction(user, ticketId, 'onboarding.book_walkthrough', tx);
-    return changeTicket(tx, t, { stage: 'walkthrough', walkthroughAt: when, walkthroughMode: mode, dueAt: when },
+    return changeTicket(tx, t, { stage: 'walkthrough', walkthroughAt: when, walkthroughMode: mode, dueAt: when, nextFollowupAt: null },
       { actorId: user.id, action: 'ticket.walkthrough_booked' });
   });
 }
@@ -267,7 +272,8 @@ export async function sendHub(user, ticketId, variables, { now = new Date() } = 
   await sendTemplate(user, conv.id, 'oa_hub_share_v1', variables, { now }, db);
   const next = new Date(now.getTime() + c['oa.quiet_gap'] * DAY);
   return changeTicket(db, await db.ticket.findUnique({ where: { id: t.id } }),
-    { stage: 'walkthrough', followupNo: 0, nextFollowupAt: next, dueAt: next },
+    // a new went-quiet run: an earlier "follow-up not sent" belongs to the run before
+    { stage: 'walkthrough', followupNo: 0, nextFollowupAt: next, dueAt: next, tags: JSON.stringify((json(t.tags) ?? []).filter((x) => x !== 'oa_followup_suppressed')) },
     { actorId: user.id, action: 'ticket.hub_sent', reason: 'Declined a call — Resource Hub sent; went-quiet cadence starts' });
 }
 

@@ -239,7 +239,7 @@ async function quietLead() {
   return l;
 }
 
-test('went-quiet: r5 sends the billable template every quiet_gap, up to quiet_max; r6 cuts off after the last gap', async () => {
+test('went-quiet: r5 sends the billable template every quiet_gap, up to quiet_max; r6 cuts off right after the last follow-up', async () => {
   const l = await quietLead();
   assert.equal((await runOnboardingSweep({ now: at(2 * DAY) })).r5, 0); // not yet 3 days
   const first = await runOnboardingSweep({ now: at(3 * DAY + 2 * HOUR) });
@@ -253,8 +253,10 @@ test('went-quiet: r5 sends the billable template every quiet_gap, up to quiet_ma
   await runOnboardingSweep({ now: at(9 * DAY + 4 * HOUR) });
   t = await reload(l.ticket);
   assert.deepEqual([t.followupNo, t.status], [3, 'prequalified']);
-  assert.equal((await runOnboardingSweep({ now: at(10 * DAY) })).r6, 0); // last follow-up still has its gap
-  assert.equal((await runOnboardingSweep({ now: at(12 * DAY + 5 * HOUR) })).r6, 1);
+  // App. B r6 (every 15 min): followup_no >= quiet_max and time_since_last_inbound > quiet_gap — the
+  // prototype's tracker puts Cold Lead on the day of the last follow-up (day quiet_max × quiet_gap)
+  assert.equal((await runOnboardingSweep({ now: at(9 * DAY + 4 * HOUR + 15 * 60_000) })).r6, 1);
+  assert.equal((await runOnboardingSweep({ now: at(9 * DAY + 4 * HOUR + 30 * 60_000) })).r6, 0, 'idempotent');
   t = await reload(l.ticket);
   assert.equal(t.status, 'cold_lead');
   assert.ok(JSON.parse(t.tags).includes('oa_cold_went_quiet'));

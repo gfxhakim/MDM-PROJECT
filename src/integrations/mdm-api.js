@@ -25,6 +25,10 @@ export const PATHS = {
   sellerReporting: '/api/analytics/orders/sellers-status/search',
   wallets: '/api/finance/seller-payments/wallets/search',
   managers: '/api/omni-channel/account-managers/search',
+  users: '/api/users/search', // every platform user (Users on MDM), with role, scope, countries
+  usersList: '/api/users', // the older list endpoint, used when the search one is refused
+  login: '/api/auth/login/user', // Login Regular User: username + password → bearer token
+  me: '/api/auth/me', // the signed-in user's profile (trackingId, role, scope)
   assignManager: (sellerId) => `/api/omni-channel/account-managers/sellers/${encodeURIComponent(sellerId)}`,
   join: (sellerId, kind) => `/api/sellers/${encodeURIComponent(sellerId)}/join/${kind}`,
 };
@@ -107,13 +111,76 @@ export function sellerToRow(s) {
     updatedAt: dateOf(s.updatedAt),
     utm: s.utm?.utmSource ?? null,
     accountManagerRef: s.accountManager?.trackingId ?? null,
+    accountManagerName: personName(s.accountManager),
+    // the platform user responsible for the join (the agent working the registration), and the
+    // join history: every mark (not answered, follow-up, missing documents, accepted …) with who
+    // made it and when — the merchant's record on MDM that must come with them (OA 3.5)
+    responsibleRef: s.joinStatusResponsible?.trackingId ?? null,
+    responsibleName: personName(s.joinStatusResponsible),
+    createdByRef: s.createdBy?.trackingId ?? null,
+    history: (Array.isArray(s.joinStatusHistory) ? s.joinStatusHistory : [])
+      .map((h) => ({ status: h?.status ?? null, notes: h?.notes ?? null, date: dateOf(h?.date), responsibleRef: h?.responsible?.trackingId ?? null, responsibleName: personName(h?.responsible) }))
+      .filter((h) => h.status || h.notes),
   };
+}
+
+const personName = (p) => (p ? [p.firstName, p.lastName].filter(Boolean).join(' ').trim() || null : null);
+
+/**
+ * A platform user (GetUserResponse, or the older UserDto with a `profile`) → one row for the staff
+ * list. `countries` are kept as MDM lists them (ids or codes); mdm-staff.js turns them into markets.
+ */
+export function userToRow(u) {
+  const prof = u.profile ?? {};
+  const usernames = (Array.isArray(u.usernames) ? u.usernames : []).map(String).filter(Boolean);
+  const email = (u.email ?? usernames.find((x) => x.includes('@')) ?? null)?.trim().toLowerCase() || null;
+  return {
+    mdmRef: u.trackingId ?? null,
+    name: [u.firstName ?? prof.firstName, u.lastName ?? prof.lastName].filter(Boolean).join(' ').trim() || email || u.trackingId || null,
+    email, usernames,
+    phones: (Array.isArray(u.phones) ? u.phones : Array.isArray(prof.phones) ? prof.phones : []).map(String).filter(Boolean),
+    role: u.role ?? null, scope: u.scope ?? null,
+    countries: (Array.isArray(u.countries) ? u.countries : []).map((c) => (typeof c === 'string' ? c : c?.code ?? c?.id ?? null)).filter(Boolean),
+    restricted: u.restricted === true,
+    lastLoginAt: dateOf(u.lastLogin), createdAt: dateOf(u.createdAt),
+  };
+}
+
+/** Every platform user, page by page: the search endpoint, or the older list when it is refused. */
+export async function* platformUsers(api) {
+  try {
+    for await (const u of api.search(PATHS.users, {})) yield u;
+    return;
+  } catch (err) {
+    if (!(err instanceof MdmApiError) || ![404, 405].includes(err.status)) throw err;
+  }
+  for (let p = 1; p <= 1000; p++) {
+    const body = await api.call('GET', PATHS.usersList, { query: `page=${p}&perPage=100` });
+    for (const u of body?.list ?? []) yield u;
+    if (!body?.pagination?.hasMore) return;
+  }
+}
+
+/** Sign a platform user in with their own MDM username and password; returns their profile. */
+export async function platformLogin({ url, fetchImpl = fetch }, username, password) {
+  const res = await fetchImpl(`${url}${PATHS.login}`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ username, password }) });
+  let json = null; try { json = await res.json(); } catch { /* empty body */ }
+  if (!res.ok || !json?.accessToken) throw new MdmApiError(res.status, 'POST', PATHS.login, json);
+  const me = await fetchImpl(`${url}${PATHS.me}`, { headers: { authorization: `${json.tokenType || 'Bearer'} ${json.accessToken}`, accept: 'application/json' } });
+  let profile = null; try { profile = await me.json(); } catch { /* empty body */ }
+  if (!me.ok || !profile?.trackingId) throw new MdmApiError(me.status, 'GET', PATHS.me, profile);
+  return profile;
 }
 
 // joinStatus values are not enumerated in the spec (GET /api/sellers/metadata lists them at run
 // time), so they are read by meaning.
 export const isAccepted = (status) => /accept|approv|activ/i.test(status ?? '');
 export const isRejected = (status) => /reject|refus|declin/i.test(status ?? '');
+// the join marks the platform's own endpoints write (join/not-answer, join/followup, join/missing-documents)
+export const isNotAnswer = (status) => /not.?answer|no.?answer|unreach/i.test(status ?? '');
+export const isFollowup = (status) => /follow/i.test(status ?? '');
+export const isMissingDocuments = (status) => /missing|document/i.test(status ?? '');
+export const isPendingJoin = (status) => !status || /pending|new|regist|wait/i.test(status);
 
 /**
  * MDM's reporting rows for one seller (one row per market) → delivery, return and cancel rates in %,
@@ -192,10 +259,11 @@ export async function sellerMetrics(api, sellerId, { now = new Date(), countryId
   return { metrics: out, warnings };
 }
 
-/** sellerIds whose orders were created or changed since `since`. */
-export async function sellersWithOrderChanges(api, since, now = new Date()) {
+/** sellerIds whose orders were created or changed since `since`. `halt` (optional) is called per order, so Stop sync acts during the scan. */
+export async function sellersWithOrderChanges(api, since, now = new Date(), halt = null) {
   const ids = new Set();
   for await (const o of api.search(PATHS.orders, { filters: { updatedAt: { start: since.toISOString(), end: now.toISOString() } } })) {
+    halt?.();
     if (o.seller?.trackingId) ids.add(String(o.seller.trackingId));
   }
   return ids;

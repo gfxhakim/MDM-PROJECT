@@ -4,6 +4,7 @@
 import { prisma } from '../src/db.js';
 import { seedDefaults } from '../src/config/service.js';
 import { hashPassword } from '../src/auth/service.js';
+import { DEMO_TEAM, retireDemoTeam } from '../src/auth/users.js';
 
 const config = await seedDefaults();
 console.log(config.created ? `Configuration v${config.version} written from Appendix D defaults.` : `Configuration already at v${config.version}; left unchanged.`);
@@ -25,15 +26,24 @@ const USERS = [
   { email: 'viewer@mdm.local', name: 'Read-only Viewer', role: 'READ_ONLY', markets: [] },
 ];
 
+// In production the example agents and account managers are not created, and those created before
+// are removed (their leads go to the holding queue, their sellers on): the real team is imported
+// from MDM on the Integrations page (People on MDM). Development keeps them for the demo data.
+const production = process.env.NODE_ENV === 'production';
 const passwordHash = await hashPassword(password);
 let created = 0;
 for (const u of USERS) {
+  if (production && DEMO_TEAM.includes(u.email)) continue;
   const exists = await prisma.user.findUnique({ where: { email: u.email } });
   if (exists) continue;
   await prisma.user.create({ data: { ...u, markets: JSON.stringify(u.markets), passwordHash } });
   created++;
 }
 console.log(`Users: ${created} created, ${USERS.length - created} already present.${created ? ` Initial password: ${password} (set SEED_PASSWORD to choose your own).` : ''}`);
+if (production) {
+  const retired = await retireDemoTeam();
+  if (retired.length) console.log(`Demo team removed: ${retired.map((r) => `${r.email} (${r.leadsHeld} leads to the holding queue, ${r.sellersMoved} sellers moved, ${r.sellersUnassigned} unassigned)`).join('; ')}.`);
+}
 // Launch templates (OA 7.5, AM 7.6) — wording from the prototypes. All utility category.
 // Seeded as approved for development; the WhatsApp connector (step 9) syncs real Meta status.
 const TEMPLATES = [

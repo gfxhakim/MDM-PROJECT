@@ -26,7 +26,8 @@ export function contactWhere(user) {
   if (ob === true || ob === 'team') return { tickets: { some: { type: 'onboarding_task' } } };
   if (ob === 'own_contacts') {
     const book = sellerWhere(user);
-    return { OR: [{ ownerAgentId: user.id }, ...(book ? [{ seller: book }] : [])] };
+    // the Head of AM's book is every seller: every contact that has a seller record
+    return { OR: [{ ownerAgentId: user.id }, ...(book ? [{ seller: Object.keys(book).length ? book : { isNot: null } }] : [])] };
   }
   return null;
 }
@@ -89,12 +90,17 @@ export async function receiveInbound({ phone, body, name, country, sourceUtm, ki
   return result;
 }
 
-/** Block / unblock (OA 13.3): reason required, reversible, both audited. */
+/**
+ * Block / unblock (OA 13.3): reason required, reversible, both audited. On a seller's contact the
+ * AM Administrator holds it too (AM Appendix A "Request a contact block": Admin).
+ */
 export async function setBlocked(user, contactId, blocked, reason, db = prisma) {
-  const g = grant(user.role, 'contact.block');
-  if (!g) throw forbidden(denialReason(user, 'contact.block'));
+  const onboardingGrant = grant(user.role, 'contact.block');
+  const amGrant = grant(user.role, 'contact.request_block');
+  if (!onboardingGrant && !amGrant) throw forbidden(denialReason(user, 'contact.block'));
   if (!reason || !String(reason).trim()) throw badRequest('A written reason is required.');
   const contact = await findContact(user, contactId, db);
+  if (!onboardingGrant && !(await db.seller.count({ where: { contactId: contact.id } }))) throw forbidden(denialReason(user, 'contact.block'));
   if (contact.blocked === blocked) return contact;
   return inTx(db, async (tx) => {
     const updated = await tx.contact.update({ where: { id: contact.id }, data: { blocked, blockReason: blocked ? reason : null } });

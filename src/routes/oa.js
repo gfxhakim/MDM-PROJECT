@@ -9,7 +9,7 @@ import { requirePermission } from '../auth/middleware.js';
 import { getTicket } from '../core/tickets.js';
 import { emit } from '../core/events.js';
 import * as oa from '../oa/service.js';
-import { activationGate } from '../oa/stateMachine.js';
+import { activationGate, CATEGORY, REQUIRED_ON, STATUSES, TRANSITIONS } from '../oa/stateMachine.js';
 import { availability, onboardingAgents } from '../oa/capacity.js';
 import { runOnboardingSweep } from '../oa/rules.js';
 import { onboardingBudget } from '../core/templates.js';
@@ -117,6 +117,11 @@ export function macroApplies(actions) {
   const v = MACRO_APPLIES[a.op];
   return (typeof v === 'object' ? v[a.outcome] : v) ?? null;
 }
+// The state machine as the service enforces it (OA 2.4, 2.5) — the Configuration screen's table.
+oaRouter.get('/state-machine', ah(async (_req, res) => {
+  res.json(STATUSES.map((s) => ({ status: s, to: TRANSITIONS[s], category: CATEGORY[s], required: REQUIRED_ON[s] })));
+}));
+
 oaRouter.get('/macros', ah(async (req, res) => {
   const macros = await prisma.macro.findMany({
     where: { module: 'oa', OR: [{ scope: 'team' }, { scope: 'personal', ownerId: req.user.id }] },

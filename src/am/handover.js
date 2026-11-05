@@ -4,6 +4,7 @@
 import { prisma } from '../db.js';
 import { logEvent } from '../services/audit.js';
 import { notify, notifyRole } from '../core/notifications.js';
+import { AM_ADMINS } from '../auth/scope.js';
 
 /** AM 3.2. Returns { manager, bookSize } or { manager: null, reason }. */
 export async function pickAccountManager(market, config, db = prisma) {
@@ -34,7 +35,7 @@ export async function handover(sellerId, { config, now = new Date(), handoffReco
   const pick = await pickAccountManager(seller.market, config, db);
   if (!pick.manager) {
     await logEvent({ entityType: 'seller', entityId: seller.id, action: 'seller.unassigned_alert', reason: pick.reason }, db);
-    await notifyRole('ADMIN', {
+    await notifyRole(AM_ADMINS, {
       kind: 'am.r1.no_manager', title: `No account manager for ${seller.contact.name}`, body: pick.reason,
       dedupeKey: `am.r1.no_manager:${seller.id}`,
     }, db);

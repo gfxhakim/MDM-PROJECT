@@ -218,7 +218,8 @@ export async function takeOver(user, conversationId, reason, db = prisma) {
 /** Hand a taken-over conversation back to its normal owner. */
 export async function release(user, conversationId, db = prisma) {
   const conv = await findConversation(user, conversationId, db);
-  if (conv.takenOverById !== user.id && user.role !== 'ADMIN') throw forbidden('Only the user who took it over, or an Admin, can release it.');
+  // the Admin, or the Head of AM for the conversations it can read (a seller's)
+  if (conv.takenOverById !== user.id && !['ADMIN', 'HEAD_OF_AM'].includes(user.role)) throw forbidden('Only the user who took it over, the Head of AM or an Admin can release it.');
   if (!conv.takenOverById) throw badRequest('This conversation is not taken over.');
   await inTx(db, async (tx) => {
     await tx.conversation.update({ where: { id: conv.id }, data: { takenOverById: null, takenOverAt: null } });

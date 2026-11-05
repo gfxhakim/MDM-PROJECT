@@ -11,8 +11,21 @@ import { amTaskWhere, onboardingReadWhere } from '../auth/scope.js';
 import { listNotifications, markRead } from '../core/notifications.js';
 import { grant } from '../auth/permissions.js';
 import { logEvent } from '../services/audit.js';
+import { createView, deleteView, listViews } from '../core/views.js';
+import { recordsFor } from '../integrations/mdm-records.js';
 
 export const coreRouter = Router();
+
+// ───────── personal saved views (OA 6.3) ─────────
+coreRouter.get('/views', ah(async (req, res) => res.json(await listViews(req.user, req.query.module || 'oa'))));
+coreRouter.post('/views', ah(async (req, res) => res.status(201).json(await createView(req.user, req.body ?? {}))));
+coreRouter.delete('/views/:id', ah(async (req, res) => res.json(await deleteView(req.user, req.params.id))));
+
+// ───────── everything MDM holds for a merchant (the "From MDM" card) ─────────
+coreRouter.get('/mdm/record', ah(async (req, res) => {
+  const { ticketId, sellerId, contactId } = req.query;
+  res.json(await recordsFor(req.user, { ticketId, sellerId, contactId }));
+}));
 
 // ───────── contacts ─────────
 coreRouter.get('/contacts', ah(async (req, res) => {

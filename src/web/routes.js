@@ -4,14 +4,17 @@ import express, { Router } from 'express';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { consoles } from './consoles.js';
+import { versioned } from './assets.js';
+import { readFileSync } from 'node:fs';
 
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../public');
-const html = (res, body) => res.set('cache-control', 'no-store').type('html').send(body);
+const html = (res, body) => res.set('cache-control', 'no-store').type('html').send(versioned(body));
+const page = (name) => (_req, res) => html(res, readFileSync(join(publicDir, name), 'utf8'));
 
 export const webRouter = Router();
 webRouter.use('/assets', express.static(join(publicDir, 'assets'), { maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0 }));
-webRouter.get('/', (_req, res) => res.set('cache-control', 'no-store').sendFile(join(publicDir, 'login.html')));
-webRouter.get('/integrations', (_req, res) => res.set('cache-control', 'no-store').sendFile(join(publicDir, 'integrations.html')));
+webRouter.get('/', page('login.html'));
+webRouter.get('/integrations', page('integrations.html'));
 webRouter.get('/oa', (_req, res) => html(res, consoles().oa));
 webRouter.get('/am', (_req, res) => {
   const am = consoles().am;

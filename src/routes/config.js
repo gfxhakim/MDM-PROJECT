@@ -8,9 +8,11 @@ import { PARAMETERS } from '../config/parameters.js';
 
 export const configRouter = Router();
 
-const EDITORS = ['MANAGER', 'ADMIN'];
+// Each key is still checked against its Appendix D owner: a Manager changes onboarding parameters,
+// the Head of AM account-management ones, an Admin all of them.
+const EDITORS = ['MANAGER', 'HEAD_OF_AM', 'ADMIN'];
 const editorsOnly = (req, _res, next) =>
-  EDITORS.includes(req.user.role) ? next() : next(forbidden('Configuration is changed by a Manager or an Admin.'));
+  EDITORS.includes(req.user.role) ? next() : next(forbidden('Configuration is changed by a Manager, the Head of AM or an Admin.'));
 
 configRouter.get('/', ah(async (_req, res) => res.json(await cfg.getLiveConfig())));
 

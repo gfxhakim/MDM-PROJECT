@@ -44,7 +44,8 @@
       if (!read()?.token) { location.href = '/'; return new Promise(() => {}); }
       return request('GET', '/api/auth/me');
     },
-    homeFor(role) { return role === 'ACCOUNT_MANAGER' ? '/am' : '/oa'; },
+    // the account-management team opens the AM console; everyone else the onboarding console
+    homeFor(role) { return ['ACCOUNT_MANAGER', 'HEAD_OF_AM'].includes(role) ? '/am' : '/oa'; },
     canSeeAdmin: (role) => ADMIN_VIEW_ROLES.includes(role),
   };
 })();

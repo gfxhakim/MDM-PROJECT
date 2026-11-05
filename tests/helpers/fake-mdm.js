@@ -2,7 +2,11 @@
 // sellers: platform seller records; orders: { sellerId: count }; managers: platform AMs;
 // reporting: { sellerId: [row per market] } overrides MDM's reporting rows (default: 80 delivered,
 // 15 returned, 5 cancelled out of 100 orders in one market, for every seller that has orders).
-export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}, reporting = {}, fail = null } = {}) {
+// users: platform users (GetUserResponse shape); passwords: { username: password } accepted by
+// the login endpoint (the profile returned is the matching user's).
+// stores: platform stores (Store, `seller.trackingId` names the owner); teamMembers: { sellerId: TeamMember[] };
+// fees: { sellerId: GetSellerServiceFeesResponse } (default: a small one for every seller).
+export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}, reporting = {}, users = [], passwords = {}, fail = null, stores = [], teamMembers = {}, fees = {} } = {}) {
   const calls = [];
   const page = (list, body) => {
     const { page: p = 1, perPage = 100 } = body?.pagination ?? {};
@@ -18,6 +22,16 @@ export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}
     if (forced) return reply(forced, { error: { code: 'x', message: `forced ${forced}` } });
     if (u.pathname === '/api/sellers/search') {
       const sorted = [...sellers].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+      return reply(200, page(sorted, body));
+    }
+    let m;
+    if ((m = /^\/api\/sellers\/([^/]+)\/team-members\/search$/.exec(u.pathname))) return reply(200, page(teamMembers[decodeURIComponent(m[1])] ?? [], body));
+    if ((m = /^\/api\/sellers\/([^/]+)\/service-fees$/.exec(u.pathname))) {
+      const id = decodeURIComponent(m[1]);
+      return reply(200, fees[id] ?? { currency: 'LYD', plan: { plan: { trackingId: 'p1', name: 'Starter', minPoints: 0, maxPoints: 100 }, totalPoints: 10 }, callCenter: { type: 'standard', lead: 1, confirmed: 2, delivered: 3, currency: 'LYD' }, fulfillment: {}, shipping: {}, sourcing: [], exchange: { usd: 4.8, euro: 5.2 } });
+    }
+    if (u.pathname === '/api/stores/search') {
+      const sorted = [...stores].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
       return reply(200, page(sorted, body));
     }
     if (u.pathname.startsWith('/api/sellers/') && opts.method === 'GET') {
@@ -49,6 +63,19 @@ export function fakeMdm({ sellers = [], orders = {}, managers = [], wallets = {}
       return reply(200, page(id in wallets ? [{ seller: { trackingId: id }, ready: wallets[id], notReady: 0, paid: 0 }] : [], body));
     }
     if (u.pathname === '/api/omni-channel/account-managers/search') return reply(200, page(managers, body));
+    if (u.pathname === '/api/users/search') return reply(200, page(users, body));
+    if (u.pathname === '/api/auth/login/user') {
+      const { username, password } = body ?? {};
+      if (opts.headers['x-api-key']) return reply(400, { error: { code: 'x', message: 'login is a user call, not an API-key call' } });
+      const user = users.find((x) => (x.usernames ?? []).includes(username) || x.email === username);
+      if (!user || !password || passwords[username] !== password) return reply(401, { error: { code: 'unauthorized', message: 'Invalid credentials' } });
+      return reply(201, { accessToken: `tok-${user.trackingId}`, tokenType: 'Bearer', expiresAt: '2030-01-01T00:00:00Z', refreshToken: 'r' });
+    }
+    if (u.pathname === '/api/auth/me') {
+      const m = /^Bearer tok-(.+)$/.exec(opts.headers.authorization ?? '');
+      const user = m && users.find((x) => x.trackingId === m[1]);
+      return user ? reply(200, user) : reply(401, { error: { code: 'unauthorized', message: 'no session' } });
+    }
     if (u.pathname.startsWith('/api/omni-channel/account-managers/sellers/')) return reply(200, { sellerId: u.pathname.split('/').pop(), accountManagerId: body.accountManagerId });
     if (/^\/api\/sellers\/[^/]+\/join\//.test(u.pathname)) return reply(200, { trackingId: u.pathname.split('/')[3] });
     return reply(404, { error: { code: 'not_found', message: 'no route' } });
@@ -62,4 +89,12 @@ export const mdmSeller = (id, phone, extra = {}) => ({
   country: { id: 'c-ly', name: 'Libya', code: 'LBY' }, countries: [{ id: 'c-ly', name: 'Libya', code: 'LBY' }],
   joinStatus: 'pending', joinStatusDate: '2026-10-30T00:00:00Z',
   createdAt: '2026-10-30T00:00:00Z', updatedAt: '2026-10-30T00:00:00Z', utm: { utmSource: 'fb_ads' }, accountManager: null, ...extra,
+});
+
+// A platform user as GET /api/users/search lists them (GetUserResponse).
+export const mdmUser = (id, email, extra = {}) => ({
+  trackingId: id, usernames: [email, ...(extra.usernames ?? [])], role: 'commercial-agent', scope: 'commercial', permissions: [],
+  firstName: extra.firstName ?? id, lastName: extra.lastName ?? '', email, phones: extra.phones ?? [], pictureId: null, restricted: false, custom: false,
+  shouldChangePassword: false, shouldReLogin: false, lastLogin: '2026-10-30T08:00:00Z', lastLogout: null, countries: ['c-ly'],
+  createdAt: '2025-01-01T00:00:00Z', updatedAt: '2026-10-30T00:00:00Z', ...extra,
 });

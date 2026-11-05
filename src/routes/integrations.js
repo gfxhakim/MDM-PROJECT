@@ -4,6 +4,7 @@
 //   • integrationsRouter — the Admin's status page, manual MDM sync, Zoho import, click-to-call.
 // Every connector is optional: unset credentials leave the app running on imported/seeded data
 // and the status endpoint says what is and isn't connected.
+import { dateRange } from '../http/range.js';
 import { Router } from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { ah, forbidden, unauthorized } from '../http/errors.js';
@@ -11,12 +12,15 @@ import { requirePermission } from '../auth/middleware.js';
 import { findContact } from '../core/contacts.js';
 import { prisma } from '../db.js';
 import { handleWebhook, verifySignature, whatsappConfig, whatsappStatus } from '../integrations/whatsapp.js';
-import { handleMdmEvent, mdmConfig, mdmStatus, startSync } from '../integrations/mdm.js';
+import { handleMdmEvent, isSyncRunning, mdmConfig, mdmStatus, startSync } from '../integrations/mdm.js';
+import { requestStop, saveRanges, setPaused } from '../integrations/mdm-control.js';
 import { decideSkipped, listSkipped } from '../integrations/mdm-skipped.js';
+import { decideStaff, listStaff } from '../integrations/mdm-staff.js';
 import { dial, handleYeastarEvent, yeastarConfig, yeastarStatus } from '../integrations/yeastar.js';
 import { runImport } from '../integrations/importer.js';
 import { OPTIONAL, optionalOn } from '../integrations/optional.js';
 import { pushPending, writebackStatus } from '../integrations/mdm-writeback.js';
+import { userRecord } from '../integrations/mdm-records.js';
 
 // A connector that is switched off answers like a route that does not exist.
 const ifOn = (name) => (_req, res, next) => (optionalOn(name) ? next() : res.status(404).json({ error: { code: 'not_found', message: 'No such endpoint.' } }));
@@ -62,8 +66,11 @@ export const integrationsRouter = Router();
 
 integrationsRouter.get('/status', requirePermission('integrations.manage'), ah(async (_req, res) => {
   const runs = await prisma.integrationRun.findMany({ orderBy: { startedAt: 'desc' }, take: 20 });
+  // the sync in progress, read on its own: write-back runs piling up must not push it out of the 20 rows
+  const live = isSyncRunning() ? await prisma.integrationRun.findFirst({ where: { kind: 'mdm_sync', status: 'running' }, orderBy: { startedAt: 'desc' } }) : null;
   res.json({
     mdm: await mdmStatus(), writeback: await writebackStatus(),
+    live: live ? { ...live, summary: live.summary ? JSON.parse(live.summary) : null } : null,
     optional: Object.fromEntries(OPTIONAL.map((k) => [k, optionalOn(k)])),
     ...(optionalOn('whatsapp') ? { whatsapp: whatsappStatus() } : {}),
     ...(optionalOn('yeastar') ? { yeastar: yeastarStatus() } : {}),
@@ -77,13 +84,33 @@ integrationsRouter.post('/mdm/sync', requirePermission('integrations.manage'), a
   res.status(202).json(await startSync({ actorId: req.user.id, full: req.body?.full === true }));
 }));
 
+// Stop sync: the run in progress stops before its next record (what it read stays) and the automatic
+// sync is paused until Resume. Sync now and Full resync still run once when pressed.
+integrationsRouter.post('/mdm/stop', requirePermission('integrations.manage'), ah(async (req, res) => {
+  const wasRunning = isSyncRunning();
+  if (wasRunning) requestStop(req.user);
+  await setPaused(req.user, true, { reason: wasRunning ? 'Stop sync pressed while a sync was running' : 'Stop sync pressed' });
+  res.json({ stopping: wasRunning, paused: true });
+}));
+
+integrationsRouter.post('/mdm/resume', requirePermission('integrations.manage'), ah(async (req, res) => {
+  await setPaused(req.user, false);
+  res.json({ paused: false });
+}));
+
+// { sellers?, people? }: each { mode: all } | { mode: recent, days } | { mode: old, before } | { mode: custom, from?, to? }
+// — which new merchants and people the sync brings in, by the date MDM recorded for them.
+integrationsRouter.post('/mdm/range', requirePermission('integrations.manage'), ah(async (req, res) => {
+  res.json(await saveRanges(req.user, req.body ?? {}));
+}));
+
 integrationsRouter.post('/mdm/push', requirePermission('integrations.manage'), ah(async (_req, res) => {
   res.json(await pushPending());
 }));
 
 // Sellers the pull could not place, kept aside for a decision. ?decision=waiting|placed|lead|left_out|imported|all
 integrationsRouter.get('/mdm/skipped', requirePermission('integrations.manage'), ah(async (req, res) => {
-  res.json(await listSkipped({ decision: req.query.decision, reason: req.query.reason, q: req.query.q }));
+  res.json(await listSkipped({ decision: req.query.decision, reason: req.query.reason, q: req.query.q, ...dateRange(req.query) }));
 }));
 
 // { ids, action: place|lead|leave_out|reopen, market?, managerId?, note?, phone? } — each row reported on
@@ -93,9 +120,25 @@ integrationsRouter.post('/mdm/skipped/decide', requirePermission('integrations.m
   const result = await decideSkipped(req.user, req.body ?? {});
   if (result.action === 'place' && result.done && mdmConfig().apiKey) {
     // answers as soon as the run is recorded; a sync already running (409) reads the placed sellers itself
-    result.sync = await startSync({ actorId: req.user.id }).then((s) => ({ started: true, runId: s.runId }), (e) => ({ started: false, reason: e.message }));
+    result.sync = await startSync({ actorId: req.user.id, automatic: true }).then((s) => ({ started: true, runId: s.runId }), (e) => ({ started: false, reason: e.message }));
   }
   res.json(result);
+}));
+
+// People on MDM: every platform user the pull read, waiting for the Admin's decision.
+// ?decision=waiting|imported|left_out|all  &scope=  &q=
+integrationsRouter.get('/mdm/staff', requirePermission('integrations.manage'), ah(async (req, res) => {
+  res.json(await listStaff({ decision: req.query.decision, scope: req.query.scope || null, q: req.query.q || null, ...dateRange(req.query) }));
+}));
+
+// { ids, action: import|leave_out|reopen, role?, markets?, note? } — each person reported on their
+// own, one audit entry for the run; an import then gives them the leads and sellers MDM ties to them.
+integrationsRouter.get('/mdm/staff/:mdmRef/record', requirePermission('integrations.manage'), ah(async (req, res) => {
+  res.json(await userRecord(req.params.mdmRef));
+}));
+
+integrationsRouter.post('/mdm/staff/decide', requirePermission('integrations.manage'), ah(async (req, res) => {
+  res.json(await decideStaff(req.user, req.body ?? {}));
 }));
 
 // Zoho CSV/XLSX import. dryRun defaults to true: the first call returns the per-row plan.

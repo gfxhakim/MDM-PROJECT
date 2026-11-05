@@ -11,8 +11,9 @@ export async function notify({ userId, kind, title, body = null, ticketId = null
   return db.notification.create({ data: { userId, kind, title, body, ticketId, dedupeKey } });
 }
 
+/** Notify every active account holding `role` (one role, or a list of roles). */
 export async function notifyRole(role, payload, db = prisma) {
-  const users = await db.user.findMany({ where: { role, active: true }, select: { id: true } });
+  const users = await db.user.findMany({ where: { role: Array.isArray(role) ? { in: role } : role, active: true, removedAt: null }, select: { id: true } });
   const out = [];
   for (const u of users) out.push(await notify({ ...payload, userId: u.id }, db));
   return out.filter(Boolean);
