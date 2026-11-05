@@ -25,7 +25,7 @@ import { changeTicket } from '../oa/service.js';
 import { addSystemLine } from '../core/conversations.js';
 import { deletedIndex, isKeptOut } from '../core/deletion.js';
 import { keepRecord, readSellerExtras, readStores, recordState } from './mdm-records.js';
-import { SyncStopped, clearStop, getSyncSettings, inRange, stopRequest } from './mdm-control.js';
+import { SyncStopped, clearMarketSkips, clearStop, countryKeeper, forgetSeller, getSyncSettings, inRange, marketsRuleOnce, outsideMarkets, sellerForRecord, stopRequest, storeInMarkets, trimOtherCountries } from './mdm-control.js';
 
 export const mdmConfig = () => ({
   url: (process.env.MDM_API_URL || 'https://api.mdm.express').replace(/\/$/, ''),
@@ -363,7 +363,7 @@ function tally(bucket, ref, reason) {
 
 async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = prisma, now = new Date(), onStarted = null } = {}) {
   const c = mdmConfig();
-  const settings = await getSyncSettings(db);
+  const settings = await marketsRuleOnce(await getSyncSettings(db), db); // the first run under the markets rule reads MDM in full
   let last = full ? null : await db.integrationRun.findFirst({ where: { kind: 'mdm_sync', status: 'completed' }, orderBy: { startedAt: 'desc' } });
   // a new sellers range, or everything deleted here, since the last run: read MDM from the beginning
   if (last && settings.fullFrom && last.startedAt < new Date(settings.fullFrom)) last = null;
@@ -374,7 +374,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
     reasons: { skipped: {}, errors: {}, warnings: {} }, live: { current: null, recent: [] }, staff: { read: 0, error: null }, aligned: { leads: 0, sellers: 0 },
     records: { sellers: 0, stores: 0, teamMembers: 0, fees: 0, users: 0 },
     // what this run brought in, by the date MDM recorded; new ones outside it are counted, not brought in
-    range: { sellers: settings.sellers, people: settings.people }, outOfRange: { sellers: 0, people: 0, stores: 0 } };
+    range: { sellers: settings.sellers, people: settings.people }, outOfRange: { sellers: 0, people: 0, stores: 0, markets: { sellers: 0, stores: 0, fees: 0, skippedCleared: 0 } } };
   // Stop sync: checked before each record, so the record being read is finished and nothing is left half-written
   const halt = () => { const s = stopRequest(); if (s) throw new SyncStopped(s); };
   // everything MDM holds for each merchant and person, kept as MDM sends it (mdm-records.js)
@@ -383,6 +383,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
   const refused = (what, message) => { summary.warningCount++; tally(summary.reasons.warnings, null, `${what}: ${message}`); };
   const done = new Set();
   const inRefs = new Set(); const outRefs = new Set(); // sellers this run read inside / outside the sellers range
+  const otherRefs = new Set(); // sellers this run left out: they do not sell into Libya, Iraq or Lebanon
   // Sellers kept aside earlier (waiting, or left out): if one now imports by the normal rules, its row is closed.
   const watched = await watchedRefs(db).catch(() => new Set());
   // The last 20 outcomes, newest first, so the page can show the import while it happens.
@@ -450,6 +451,7 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
     }
     const ctx = await upsertContext(db); // after the staff step: the agents and managers MDM names may be ours now
     if (!since) summary.total = await api.count(PATHS.sellers).catch(() => null); // how far a full run is
+    summary.outOfRange.markets.skippedCleared = await clearMarketSkips(db); // markets rule: those sellers are no longer synced
     for await (const s of api.search(PATHS.sellers, { sortBy: { updatedAt: 'DESC' } })) {
       const row = sellerToRow(s);
       if (since && row.updatedAt && row.updatedAt < since) break; // newest first: the rest are unchanged
@@ -458,13 +460,26 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
       await learnCountries(row.places);
       if (!row.mdmRef || done.has(row.mdmRef)) continue;
       done.add(row.mdmRef);
-      if (isKeptOut(ctx.deleted, row)) { await record({ ok: false, action: 'kept_out', ref: row.mdmRef, reason: 'Deleted here by an Admin — the sync leaves it out.' }, row); continue; }
+      // Only sellers who sell into Libya, Iraq or Lebanon (client, 5 Nov 2026): one of another market is
+      // not recorded here, and what earlier runs kept of it goes (a seller deleted here included)
+      const otherMarket = outsideMarkets(row);
+      if (isKeptOut(ctx.deleted, row)) {
+        if (otherMarket) { otherRefs.add(String(row.mdmRef)); await forgetSeller(row.mdmRef, db); }
+        await record({ ok: false, action: 'kept_out', ref: row.mdmRef, reason: 'Deleted here by an Admin — the sync leaves it out.' }, row); continue;
+      }
+      // one of another market, not here yet, is left out: not brought in, not on the Skipped list
+      if (otherMarket && !(await alreadyHere(row, db))) { summary.outOfRange.markets.sellers++; otherRefs.add(String(row.mdmRef)); summary.outOfRange.markets.skippedCleared += (await forgetSeller(row.mdmRef, db)).skipped; continue; }
+      const keepCountry = countryKeeper(row.places, db); // fees, services and stores outside Libya, Iraq and Lebanon are not recorded
       // Sellers range (registration date on MDM): a merchant not here yet and registered outside it
       // is not brought in, kept aside or recorded; one already here is updated whatever the range
-      if (!inRange(row.createdAt, settings.sellers, now) && !(await alreadyHere(row, db))) { summary.outOfRange.sellers++; outRefs.add(String(row.mdmRef)); continue; }
+      if (!inRange(row.createdAt, settings.sellers, now) && !(await alreadyHere(row, db))) {
+        summary.outOfRange.sellers++; outRefs.add(String(row.mdmRef));
+        await trimOtherCountries(row.mdmRef, keepCountry, db); // kept by runs before the range: other countries go
+        continue;
+      }
       inRefs.add(String(row.mdmRef));
       try {
-        await keepRecord('seller', row.mdmRef, s, {}, db); summary.records.sellers++;
+        await keepRecord('seller', row.mdmRef, await sellerForRecord(s, keepCountry), {}, db); summary.records.sellers++;
         const known = await sellerFor({ mdmRef: row.mdmRef, phone: row.phone }, db).catch(() => null);
         let metrics = {};
         if (known || isAccepted(row.joinStatus)) {
@@ -475,22 +490,26 @@ async function runSync({ actorId = null, full = false, fetchImpl = fetch, db = p
       } catch (err) { if (err instanceof SyncStopped) throw err; await record({ action: 'error', ref: row.mdmRef, reason: err.message }, row); }
       // the seller's team members and what MDM charges it, per country (a failure here never stops the import)
       try {
-        const extras = await readSellerExtras(api, s, row.places, records, refused, db);
+        const extras = await readSellerExtras(api, s, row.places, records, refused, db, { keepCountry, leftOut: () => { summary.outOfRange.markets.fees++; } });
         summary.records.teamMembers += extras.teamMembers; summary.records.fees += extras.fees;
       } catch (err) { summary.warningCount++; tally(summary.reasons.warnings, row.mdmRef, `MDM record: ${err.message}`); }
     }
     // every store changed since the last run (all of them on a full run), with the seller it belongs to
-    // Under a sellers range, a store comes in only with a seller that is brought in (read in range
-    // in this run, or already here); the stores of sellers left out by the range are not recorded.
-    const keepStore = async (sellerRef) => {
-      if (settings.sellers.mode === 'all') return true;
+    // A store in Algeria (or any country outside Libya, Iraq and Lebanon), or of a seller left out by
+    // the markets rule, is not recorded ('market'). A store comes in only with a seller that is brought
+    // in: read in this run inside the date range, or brought in before (its MDM record is kept, or it is
+    // here). The store of a seller this run did not read and that was never brought in is not recorded
+    // ('unknown': left out earlier by the markets rule or the dates, or deleted here).
+    const keepStore = async (sellerRef, st) => {
       const ref = sellerRef ? String(sellerRef) : null;
-      if (!ref || outRefs.has(ref)) return false;
-      if (inRefs.has(ref)) return true;
-      if (await db.mdmRecord.findUnique({ where: { kind_mdmRef: { kind: 'seller', mdmRef: ref } }, select: { id: true } })) return true;
-      return alreadyHere({ mdmRef: ref }, db);
+      if (!(await storeInMarkets(st, db)) || (ref && otherRefs.has(ref))) return 'market';
+      if (!ref) return settings.sellers.mode === 'all' ? null : 'range'; // a store with no seller on MDM: as before
+      if (outRefs.has(ref)) return 'range';
+      if (inRefs.has(ref)) return null;
+      if (await db.mdmRecord.findUnique({ where: { kind_mdmRef: { kind: 'seller', mdmRef: ref } }, select: { id: true } })) return null;
+      return (await alreadyHere({ mdmRef: ref }, db)) ? null : 'unknown';
     };
-    const storesLeftOut = () => { summary.outOfRange.stores++; };
+    const storesLeftOut = (why) => { if (why === 'market') summary.outOfRange.markets.stores++; else if (why === 'range') summary.outOfRange.stores++; };
     summary.records.stores = await readStores(api, since, records, refused, db, { keepStore, leftOut: storesLeftOut }).catch((err) => { if (err instanceof SyncStopped) throw err; refused('stores', err.message); return 0; });
     const refs = since ? [...await sellersWithOrderChanges(api, since, now, halt)] : [];
     for (const ref of refs) {

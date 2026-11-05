@@ -207,6 +207,26 @@ range is applied here; a changed sellers range makes the next run read MDM from 
 Pending registrations older than `MDM_LEAD_MAX_AGE_DAYS` still go to the Skipped list, as before.
 The setting is kept in `AppSetting` (`mdm.sync`); each change is one audit entry.
 
+**Only sellers who sell into Libya, Iraq or Lebanon (asked by the client on 5 Nov 2026).** A
+seller comes in when MDM lists Libya, Iraq or Lebanon for it: where it sells (`countries`) or its
+own country (`country`), wherever it lives; with no country on MDM, its phone decides, as before. A
+seller whose market is Algeria, or any other country, is left out: not brought in, not put on the
+Skipped list, not recorded (its MDM records from earlier runs are removed, also for a seller deleted
+here), and counted in the run ("N sellers outside Libya, Iraq and Lebanon"). A seller whose market
+cannot be told at all (no country on MDM and no usable phone) is not decided by this rule: it goes to
+the Skipped list with the reason "phone", as before. For a seller in the three markets left out by the
+date range, what earlier runs kept of it for other countries is removed. Stores whose `country` is Algeria or any other
+country outside the three (MDM's code, its country id as learnt from the sellers, or the country
+object), and the fees
+MDM charges a seller in such a country, are not recorded either; the seller's own record keeps only
+its stores and services (`stores`, `servicesByCountry`) in the three markets or with no country
+(`startingAddresses` is kept as MDM sends it). A store is recorded only with a seller brought in.
+Each run first removes the Skipped-list rows still waiting with the reason "market", and a seller
+left out loses its rows still waiting for any other reason; rows an Admin already decided stay. The
+first sync after this update reads MDM from the beginning, once (recorded as `marketsRule` in
+`mdm.sync`, with an audit entry), so what earlier runs kept of sellers outside the three markets is
+read again and removed. Merchants already here keep being updated whatever MDM says.
+
 **Stop sync.** Stops the run in progress before its next record (the record being read is
 finished; what was read stays) and pauses the automatic sync until **Resume**. The run is recorded
 as `stopped` with who pressed it; the next run starts from the last *completed* run, so nothing is

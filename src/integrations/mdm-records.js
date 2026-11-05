@@ -54,7 +54,7 @@ async function guarded(state, key, fn, warn) {
  * country MDM lists for the seller, what MDM charges there. Records that disappeared on MDM are
  * removed here too, so the card never shows a team member MDM no longer has.
  */
-export async function readSellerExtras(api, raw, places, state, warn, db = prisma) {
+export async function readSellerExtras(api, raw, places, state, warn, db = prisma, { keepCountry = null, leftOut = null } = {}) {
   const ref = raw?.trackingId;
   if (!ref) return { teamMembers: 0, fees: 0 };
   let teamMembers = 0; let fees = 0;
@@ -72,6 +72,8 @@ export async function readSellerExtras(api, raw, places, state, warn, db = prism
     ...(raw.servicesByCountry ?? []).map((x) => x?.countryId),
   ].filter(Boolean))];
   for (const countryId of countryIds) {
+    // fees in a country outside Libya, Iraq and Lebanon are not recorded (and earlier ones go)
+    if (keepCountry && !(await keepCountry(countryId))) { await db.mdmRecord.deleteMany({ where: { kind: 'service_fees', mdmRef: `${ref}:${countryId}` } }); leftOut?.(); continue; }
     const f = await guarded(state, 'service-fees', () => api.call('GET', RECORD_PATHS.serviceFees(ref), { query: `countryId=${encodeURIComponent(countryId)}` }), warn);
     if (f) { await keepRecord('service_fees', `${ref}:${countryId}`, { countryId, ...f }, { sellerRef: ref }, db); fees++; }
   }
@@ -80,8 +82,9 @@ export async function readSellerExtras(api, raw, places, state, warn, db = prism
 
 /**
  * Every store changed since the last run (all of them on a full run), newest change first.
- * `keepStore(sellerRef)` (optional) says whether the store's seller is brought in; a store it
- * refuses is not recorded and `leftOut()` is called instead.
+ * `keepStore(sellerRef, store)` (optional) answers null to record the store, or why it is left out
+ * ('market' | 'range'): then the store is not recorded (a record from an earlier run goes) and
+ * `leftOut(why)` is called instead.
  */
 export async function readStores(api, since, state, warn, db = prisma, { keepStore = null, leftOut = null } = {}) {
   let n = 0;
@@ -90,7 +93,8 @@ export async function readStores(api, since, state, warn, db = prisma, { keepSto
       state.halt?.(); // Stop sync, pressed while the stores are read
       const at = st.updatedAt ? new Date(st.updatedAt) : null;
       if (since && at && at < since) break;
-      if (keepStore && !(await keepStore(st.seller?.trackingId ?? null))) { leftOut?.(); continue; }
+      const why = keepStore ? await keepStore(st.seller?.trackingId ?? null, st) : null;
+      if (why) { if (st.trackingId) await db.mdmRecord.deleteMany({ where: { kind: 'store', mdmRef: String(st.trackingId) } }); leftOut?.(why); continue; }
       await keepRecord('store', st.trackingId, st, { sellerRef: st.seller?.trackingId ?? null }, db);
       n++;
     }

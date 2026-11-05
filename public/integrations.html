@@ -225,6 +225,17 @@ button.btn.solid-danger{background:#B42318;border-color:#B42318;color:#fff}
 <script src="/assets/i18n-ar.js"></script>
 <script src="/assets/mdm-record.js"></script>
 <script>
+// Arabic for the markets rule (5 Nov 2026), kept beside the page that shows it.
+Object.assign(window.I18N_AR, {
+  'who sell into Libya, Iraq or Lebanon': 'ممن يبيعون في ليبيا أو العراق أو لبنان', 'all sellers': 'كل البائعين',
+  'Only sellers who sell into Libya, Iraq or Lebanon come in, wherever they live. A seller of Algeria or any other market is left out, and so are stores in Algeria or any other country.':
+    'لا يُجلب إلا البائعون الذين يبيعون في ليبيا أو العراق أو لبنان، أينما كانوا يقيمون. يُستبعد بائع الجزائر أو أي سوق آخر، وكذلك المتاجر في الجزائر أو أي بلد آخر.',
+});
+Object.assign(window.I18N_AR_TEMPLATES, {
+  '{n} sellers outside Libya, Iraq and Lebanon': '{n} بائع خارج ليبيا والعراق ولبنان',
+  '{n} stores outside Libya, Iraq and Lebanon': '{n} متجر خارج ليبيا والعراق ولبنان',
+  '{n} skipped sellers of other markets taken off the list': '{n} بائع متخطَّى من أسواق أخرى أُزيل من القائمة',
+});
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const when = (d) => d ? new Date(d).toLocaleString() : '—';
 const pill = (on, yes = 'Connected', no = 'Not connected') => `<span class="pill ${on ? 'on' : 'off'}">${on ? yes : no}</span>`;
@@ -237,6 +248,9 @@ function syncText(sm) {
   const read = sm.total ? `${(sm.fetched ?? 0).toLocaleString()} of ${sm.total.toLocaleString()} sellers read` : `${sm.fetched ?? 0} sellers read`;
   const parts = [read, `${sm.updated ?? 0} sellers updated`, sm.leadsUpdated ? `${sm.leadsUpdated} ${sm.leadsUpdated === 1 ? 'lead' : 'leads'} updated` : null,
     `${sm.sellersCreated ?? 0} sellers and ${sm.leadsCreated ?? 0} leads created`, skipped ? `${skipped} skipped` : null, sm.keptOut ? `${sm.keptOut} left out (deleted here)` : null,
+    sm.outOfRange?.markets?.sellers ? `${sm.outOfRange.markets.sellers} sellers outside Libya, Iraq and Lebanon` : null,
+    sm.outOfRange?.markets?.stores ? `${sm.outOfRange.markets.stores} stores outside Libya, Iraq and Lebanon` : null,
+    sm.outOfRange?.markets?.skippedCleared ? `${sm.outOfRange.markets.skippedCleared} skipped sellers of other markets taken off the list` : null,
     sm.outOfRange?.sellers ? `${sm.outOfRange.sellers} sellers outside the date range` : null, sm.outOfRange?.people ? `${sm.outOfRange.people} people outside the date range` : null,
     errors ? `${errors} errors` : null, sm.warningCount ? `${sm.warningCount} figures missing` : null].filter(Boolean);
   return `${sm.full ? '<span>full</span> · ' : ''}${parts.map((p) => `<span>${p}</span>`).join(', ')}`;
@@ -294,8 +308,8 @@ function renderStatus() {
       `Webhook: ${s.mdm.events ? 'accepted at <code>/api/integrations/mdm/events</code>' : 'off (set MDM_WEBHOOK_SECRET)'}`,
       last ? `<span>Last sync:</span> <span data-i18n="off">${when(last.at)}</span> — <span>${esc(last.status)}</span>${last.summary ? `, ${syncText(last.summary)}` : ''}` : 'Last sync: never',
       ...(s.mdm.pull ? [autoLine(s.mdm)] : []),
-      `<span>Brings in:</span> ${rangeText('sellers', s.mdm.sync?.sellers)}<span>;</span> ${rangeText('people', s.mdm.sync?.people)} <a href="#mdmRange" style="color:var(--red);font-weight:600">Change</a>`,
-      ...(s.mdm.sync?.fullNext ? ['<span>The next sync reads MDM from the beginning (the date range changed, or everything was deleted).</span>'] : []),
+      `<span>Brings in:</span> ${rangeText('sellers', s.mdm.sync?.sellers)} <span>who sell into Libya, Iraq or Lebanon</span>${document.documentElement.lang === 'ar' ? '؛' : ';'} ${rangeText('people', s.mdm.sync?.people)} <a href="#mdmRange" style="color:var(--red);font-weight:600">Change</a>`,
+      ...(s.mdm.sync?.fullNext ? ['<span>The next sync reads MDM from the beginning.</span>'] : []),
       s.mdm.skippedWaiting ? `<a href="#skipped" style="color:var(--red);font-weight:600">${s.mdm.skippedWaiting} skipped sellers waiting for your decision</a>` : 'No skipped sellers waiting.',
       s.mdm.staffWaiting ? `<a href="#staff" style="color:var(--red);font-weight:600">${s.mdm.staffWaiting} people on MDM waiting for your decision</a>` : `${s.mdm.staffImported ?? 0} people imported from MDM, none waiting.`,
       ...(last?.summary?.staff?.error ? [`<span class="pill fail">MDM did not let us read its users</span> <span data-i18n="off">${esc(last.summary.staff.error)}</span>`] : [])],
@@ -844,7 +858,7 @@ function rangeText(kind, r) {
   if (r.mode === 'recent') return `<span>${sellers ? `sellers registered in the last ${r.days} days` : `people created in the last ${r.days} days`}</span>`;
   if (r.mode === 'old') return `<span>${sellers ? 'sellers registered before' : 'people created before'}</span> ${dayText(r.before)}`;
   if (r.mode === 'custom') return `<span>${sellers ? 'sellers registered' : 'people created'}</span>${r.from ? ` <span>from</span> ${dayText(r.from)}` : ''}${r.to ? ` <span>up to</span> ${dayText(r.to)}` : ''}`;
-  return `<span>${sellers ? 'every seller' : 'everyone'}</span>`;
+  return `<span>${sellers ? 'all sellers' : 'everyone'}</span>`;
 }
 const RG_MODES = {
   sellers: [['all', 'All sellers'], ['recent', 'Recent sellers'], ['old', 'Old sellers'], ['custom', 'Custom dates']],
@@ -902,7 +916,9 @@ function syncRangeUI() {
   const editing = rg.saved && (rgChanged('sellers') || rgChanged('people'));
   if (!rg.saved || (!editing && rg.savedKey !== fresh)) { rg.sellers = rgEdit(m.sync.sellers); rg.people = rgEdit(m.sync.people); drawRange('sellers'); drawRange('people'); }
   rg.saved = { sellers: m.sync.sellers, people: m.sync.people }; rg.savedKey = fresh;
-  document.getElementById('rgSellersNow').innerHTML = `<span>Now:</span> ${rangeText('sellers', m.sync.sellers)}<br><span>${`Registrations older than ${m.leadMaxAgeDays} days that MDM never accepted still go to the Skipped sellers list, not to the leads.`}</span>`;
+  document.getElementById('rgSellersNow').innerHTML = `<span>Now:</span> ${rangeText('sellers', m.sync.sellers)} <span>who sell into Libya, Iraq or Lebanon</span><br>`
+    + `<span>Only sellers who sell into Libya, Iraq or Lebanon come in, wherever they live. A seller of Algeria or any other market is left out, and so are stores in Algeria or any other country.</span><br>`
+    + `<span>${`Registrations older than ${m.leadMaxAgeDays} days that MDM never accepted still go to the Skipped sellers list, not to the leads.`}</span>`;
   document.getElementById('rgPeopleNow').innerHTML = `<span>Now:</span> ${rangeText('people', m.sync.people)}<br><span>Someone already on the list, or with an account here, is always kept up to date.</span>`;
   I18N.apply(document.getElementById('mdmRange'));
   rgState();

@@ -13,13 +13,16 @@
 import { prisma } from '../db.js';
 import { badRequest } from '../http/errors.js';
 import { logEvent } from '../services/audit.js';
+import { normalizePhone } from '../core/contacts.js';
+import { marketCode } from './mdm-api.js';
+import { countryFromPhone } from './phone.js';
 
 const KEY = 'mdm.sync';
 const DAY = 86_400_000;
 export const RANGE_MODES = ['all', 'recent', 'old', 'custom'];
 export const RECENT_DAYS = [7, 30, 60, 90, 180, 365];
 const ALL = { mode: 'all' };
-const DEFAULTS = { sellers: ALL, people: ALL, paused: false, pausedAt: null, pausedById: null, fullFrom: null };
+const DEFAULTS = { sellers: ALL, people: ALL, paused: false, pausedAt: null, pausedById: null, fullFrom: null, marketsRule: null };
 
 const parse = (s) => { try { return JSON.parse(s) ?? {}; } catch { return {}; } };
 
@@ -128,4 +131,108 @@ export const clearStop = () => { stop = null; };
 /** Thrown inside a run when an Admin pressed Stop sync; the run is then recorded as stopped. */
 export class SyncStopped extends Error {
   constructor(by) { super('Stopped by an Administrator.'); this.by = by; }
+}
+
+// ───────── only sellers who sell into Libya, Iraq or Lebanon (asked by the client on 5 Nov 2026) ─────────
+// "Sync only clients of Libya / Iraq / Lebanon": a seller comes in when MDM lists one of the three
+// for it, where it sells (Seller.countries) or its own country, wherever it lives. A seller whose
+// market is Algeria, or any other country, is left out: not brought in, not put on the Skipped list,
+// not recorded. Stores whose country is Algeria (or any other country outside the three), and the
+// fees MDM charges a seller in such a country, are not recorded either. Merchants already here keep
+// being updated, as with the date range.
+export const MARKETS = ['LY', 'IQ', 'LB'];
+
+/** The seller's market as the import reads it (mdm.js upsertFromMdm): its MDM countries, else its phone. */
+export function sellerMarket(row) {
+  const fromCountry = marketCode(row?.country ?? row?.market);
+  if (fromCountry) return fromCountry;
+  try { return row?.phone ? countryFromPhone(normalizePhone(row.phone)) : null; } catch { return null; }
+}
+/**
+ * True when the seller's market is known and is not Libya, Iraq or Lebanon: the markets rule leaves it
+ * out. A seller whose market cannot be told (no country on MDM, no usable phone) is not decided by this
+ * rule; the import handles it as before (the Skipped list, reason "phone").
+ */
+export const outsideMarkets = (row) => { const m = sellerMarket(row); return !!m && !MARKETS.includes(m); };
+
+/**
+ * A store's country as MDM gives it (Seller.stores: a string; Store: CountryDto {id, name, code}):
+ * a country code decides at once; otherwise its id, named through `keepCountry`. No country: kept.
+ */
+async function storeCountryOk(country, keepCountry) {
+  const c = country && typeof country === 'object' ? country : { code: country };
+  if (c.code && /^[A-Za-z]{2,3}$/.test(String(c.code).trim())) return MARKETS.includes(marketCode(c.code)); // a country code
+  const id = c.id ?? c.code; // otherwise MDM's country id
+  return !id || keepCountry(String(id));
+}
+
+/** A store is recorded when its country (MDM's code, or its id as learnt from the sellers) is one of the three, or unknown. */
+export const storeInMarkets = (st, db = prisma) => storeCountryOk(st?.country, countryKeeper([], db));
+
+/** For the fees MDM charges per country: true for Libya, Iraq, Lebanon, or a country the sync cannot name yet. */
+export function countryKeeper(places, db = prisma) {
+  const byId = new Map((places ?? []).filter((p) => p?.id).map((p) => [String(p.id), p.code]));
+  return async (countryId) => {
+    const code = byId.get(String(countryId)) ?? (await db.mdmCountry.findUnique({ where: { id: String(countryId) } }).catch(() => null))?.code ?? null;
+    return !code || MARKETS.includes(marketCode(code));
+  };
+}
+
+/**
+ * The seller as MDM sends it, to be recorded: its stores (Seller.stores) and per-country services
+ * (servicesByCountry) outside the three markets are taken out. A store's country may come as a code
+ * or as an id; an id the sync cannot name yet is kept.
+ */
+export async function sellerForRecord(raw, keepCountry) {
+  if (!raw || typeof raw !== 'object') return raw;
+  const out = { ...raw };
+  if (Array.isArray(raw.stores)) { out.stores = []; for (const st of raw.stores) if (await storeCountryOk(st?.country, keepCountry)) out.stores.push(st); }
+  if (Array.isArray(raw.servicesByCountry)) { out.servicesByCountry = []; for (const x of raw.servicesByCountry) if (!x?.countryId || await keepCountry(String(x.countryId))) out.servicesByCountry.push(x); }
+  return out;
+}
+
+/**
+ * A seller in the three markets that this run does not record (outside the sellers date range): what
+ * earlier runs kept of it for other countries goes, so its seller record keeps only the three markets
+ * and its fees outside them are removed. Its stores are handled by the store pass.
+ */
+export async function trimOtherCountries(ref, keepCountry, db = prisma) {
+  if (!ref) return 0;
+  let n = 0;
+  const rec = await db.mdmRecord.findUnique({ where: { kind_mdmRef: { kind: 'seller', mdmRef: String(ref) } } });
+  if (rec) {
+    let data = null; try { data = JSON.parse(rec.data); } catch { /* not JSON: left as it is */ }
+    const trimmed = data && await sellerForRecord(data, keepCountry);
+    if (trimmed && JSON.stringify(trimmed) !== JSON.stringify(data)) { await db.mdmRecord.update({ where: { id: rec.id }, data: { data: JSON.stringify(trimmed) } }); n++; }
+  }
+  for (const f of await db.mdmRecord.findMany({ where: { kind: 'service_fees', sellerRef: String(ref) }, select: { id: true, mdmRef: true } })) {
+    const countryId = f.mdmRef.slice(String(ref).length + 1);
+    if (countryId && !(await keepCountry(countryId))) { await db.mdmRecord.delete({ where: { id: f.id } }); n++; }
+  }
+  return n;
+}
+
+/** A seller left out by the markets rule keeps nothing here: its MDM records from earlier runs go, and so do its rows still waiting on the Skipped list. */
+export async function forgetSeller(ref, db = prisma) {
+  if (!ref) return { records: 0, skipped: 0 };
+  const records = (await db.mdmRecord.deleteMany({ where: { OR: [{ kind: 'seller', mdmRef: String(ref) }, { sellerRef: String(ref) }] } })).count;
+  const skipped = (await db.mdmSkipped.deleteMany({ where: { mdmRef: String(ref), decision: null } })).count;
+  return { records, skipped };
+}
+
+/**
+ * The first run under the markets rule reads MDM from the beginning, so every seller, store and fee
+ * that earlier runs kept for another market is read again and removed. Once, recorded in mdm.sync.
+ */
+export async function marketsRuleOnce(settings, db = prisma) {
+  if (settings.marketsRule) return settings;
+  const saved = await write(null, { ...settings, marketsRule: 1, fullFrom: new Date().toISOString() }, db);
+  await logEvent({ actorId: null, entityType: 'system', entityId: 'mdm.sync', action: 'mdm.sync_markets_rule',
+    after: { markets: MARKETS, fullNextRun: true }, reason: 'Only sellers who sell into Libya, Iraq or Lebanon are synced (client, 5 Nov 2026).' }, db);
+  return saved;
+}
+
+/** Waiting rows of the Skipped list for a market outside the three: those sellers are no longer synced. */
+export async function clearMarketSkips(db = prisma) {
+  return (await db.mdmSkipped.deleteMany({ where: { decision: null, reasonCode: 'market' } })).count;
 }

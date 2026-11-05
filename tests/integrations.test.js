@@ -19,7 +19,8 @@ const cfg = await import('../src/config/service.js');
 const { hashPassword } = await import('../src/auth/service.js');
 const { syncSellers, startSync } = await import('../src/integrations/mdm.js');
 const { login } = await import('../src/auth/service.js');
-const { ratesFromReporting } = await import('../src/integrations/mdm-api.js');
+const { ratesFromReporting, sellerToRow } = await import('../src/integrations/mdm-api.js');
+const { rememberSkipped } = await import('../src/integrations/mdm-skipped.js');
 const { parseCsv } = await import('../src/integrations/importer.js');
 
 const PASSWORD = 'pw-123456';
@@ -154,15 +155,17 @@ test('MDM pull sync: refused when unset; reads sellers, orders and wallets; upda
   try { s = await syncSellers({ actorId: U.admin.id, fetchImpl: mdm.fetchImpl }); } finally { delete process.env.MDM_API_KEY; delete process.env.MDM_PAYMENT_PASSWORD; }
   assert.equal(mdm.calls[0].key, 'k');
   assert.equal(s.full, true);
-  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skippedCount, s.errorCount], [7, 1, 2, 1, 3, 0]);
-  assert.equal(s.reasons.skipped['Market FRA is not Libya, Iraq or Lebanon (the platform also lists MAR for this seller).'].count, 1);
+  assert.deepEqual([s.fetched, s.updated, s.sellersCreated, s.leadsCreated, s.skippedCount, s.errorCount], [7, 1, 2, 1, 2, 0]);
+  // only sellers who sell into Libya, Iraq or Lebanon are synced (client, 5 Nov 2026): France/Morocco is left out, not put on the Skipped list
+  assert.equal(s.outOfRange.markets.sellers, 1);
+  assert.equal(await prisma.mdmSkipped.count({ where: { mdmRef: 'MDM-S-FR' } }), 0);
   // the run can be followed live: how far it is and the last outcomes
   assert.equal(s.total, 7, 'a full run knows how many sellers the platform has');
   assert.equal(s.live.current, null, 'nothing is being read once the run is over');
   const fed = s.live.recent.find((e) => e.ref === 'MDM-S-NEW');
   assert.equal(fed.action, 'seller_created'); assert.match(fed.note, /^LY book · 12 orders, delivery 68\.8%, returns 6\.3% · Kept with/);
   assert.equal(s.live.recent.find((e) => e.ref === 'MDM-S-LEAD').action, 'lead_created');
-  assert.match(s.live.recent.find((e) => e.ref === 'MDM-S-FR').note, /^Market FRA/);
+  assert.equal(s.live.recent.find((e) => e.ref === 'MDM-S-FR'), undefined, 'a seller left out by the markets rule is not in the feed');
   const dz = await prisma.seller.findUnique({ where: { mdmRef: 'MDM-S-DZ' }, include: { contact: true } });
   assert.equal(dz.market, 'LY'); assert.equal(dz.contact.country, 'LY'); assert.equal(dz.wallet, -40);
   assert.equal(mdm.calls.find((c) => c.path.includes('wallets') && c.body.filters.sellerId[0] === 'MDM-S-DZ').body.filters.countryId, 'c-ly', "the wallet is read in the seller's market, not the home country");
@@ -261,7 +264,19 @@ test('skipped sellers are kept aside with the platform data; the Admin places th
   });
   const run = (f) => { process.env.MDM_API_KEY = 'k'; return syncSellers({ full: true, actorId: U.admin.id, fetchImpl: f }).finally(() => { delete process.env.MDM_API_KEY; }); };
   let s = await run(mdm.fetchImpl);
-  assert.equal(s.skippedCount, 6);
+  // sellers outside Libya, Iraq and Lebanon (France, Egypt, Tunisia) are no longer synced, so not put on the list (client, 5 Nov 2026)
+  assert.equal(s.skippedCount, 3); assert.equal(s.outOfRange.markets.sellers, 3);
+  assert.equal(await prisma.mdmSkipped.count({ where: { mdmRef: { in: ['SK-FR', 'SK-EG', 'SK-TN'] } } }), 0);
+  // the same run again: no second row, seen twice
+  await run(mdm.fetchImpl);
+  assert.equal(await prisma.mdmSkipped.count(), 3);
+  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-OLD' } })).seenCount, 2);
+  // rows for those sellers left on the list by an earlier version can still be decided until the next sync clears the waiting ones
+  const raws = { 'SK-FR': 'Market FRA is not Libya, Iraq or Lebanon (the platform also lists MAR for this seller).', 'SK-EG': 'Market EGY is not Libya, Iraq or Lebanon.', 'SK-TN': 'Market TUN is not Libya, Iraq or Lebanon.' };
+  for (const [ref, reason] of Object.entries(raws)) {
+    const raw = (await (await mdm.fetchImpl('http://x/api/sellers/search', { method: 'POST', headers: {}, body: JSON.stringify({}) })).json()).list.find((x) => x.trackingId === ref);
+    await rememberSkipped(sellerToRow(raw), { code: 'market', reason });
+  }
   const admin = await tok('admin');
   let list = (await app.call('GET', '/api/integrations/mdm/skipped', { token: admin })).body;
   assert.equal(list.items.length, 6); assert.equal(list.counts.waiting, 6);
@@ -271,10 +286,6 @@ test('skipped sellers are kept aside with the platform data; the Admin places th
   assert.equal(fr.places[0].name, 'France'); assert.equal(fr.joinStatus, 'accepted'); assert.equal(fr.suggestedMarket, null); assert.equal(fr.blocked, null);
   assert.match(fr.reason, /^Market FRA is not Libya/);
   assert.ok(list.managers.some((m) => m.name === 'yassine' && m.bookSize === 0 && m.markets.includes('LY'))); assert.equal(list.maxBook, 50);
-  // the same run again: no second row, seen twice
-  await run(mdm.fetchImpl);
-  assert.equal(await prisma.mdmSkipped.count(), 6);
-  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-FR' } })).seenCount, 2);
   // Admin only
   assert.equal((await app.call('GET', '/api/integrations/mdm/skipped', { token: await tok('manager') })).status, 403);
   assert.equal((await app.call('POST', '/api/integrations/mdm/skipped/decide', { token: await tok('yassine'), body: { ids: [fr.id], action: 'place', market: 'LY' } })).status, 403);
@@ -337,14 +348,21 @@ test('skipped sellers are kept aside with the platform data; the Admin places th
   assert.deepEqual([oldRow.decision, oldRow.reasonCode, oldRow.seenCount], ['lead', 'stale', 2]);
   assert.equal(s.leadsUpdated, 1);
   assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-REJ' } })).decision, null);
-  // the platform fixes a seller's country: the sync brings it in by the normal rules and closes its row
-  const fixed = fakeMdm({ sellers: [mdmSeller('SK-TN', '+21698123456', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', country: { id: 'c-tn', name: 'Tunisia', code: 'TUN' }, countries: [{ id: 'c-ly', name: 'Libya', code: 'LBY' }] })] });
+  // that sync cleared the waiting "market" row (SK-TN); the decided ones stay
+  assert.equal(s.outOfRange.markets.skippedCleared, 1);
+  assert.equal(await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-TN' } }), null);
+  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-EG' } })).decision, 'placed');
+  // the platform now sells SK-TN into Libya and accepts SK-REJ: the sync brings both in by the normal rules; SK-REJ's waiting row closes as imported
+  const fixed = fakeMdm({ sellers: [
+    mdmSeller('SK-TN', '+21698123456', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', country: { id: 'c-tn', name: 'Tunisia', code: 'TUN' }, countries: [{ id: 'c-ly', name: 'Libya', code: 'LBY' }] }),
+    mdmSeller('SK-REJ', '+218915550134', { joinStatus: 'accepted', joinStatusDate: '2025-01-10T00:00:00Z', createdAt: recent }),
+  ] });
   s = await run(fixed.fetchImpl);
-  assert.equal(s.sellersCreated, 1);
-  const tn = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-TN' } });
-  assert.equal(tn.decision, 'imported'); assert.equal(JSON.parse(tn.outcome).action, 'seller_created');
+  assert.equal(s.sellersCreated, 2);
+  const rej = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'SK-REJ' } });
+  assert.equal(rej.decision, 'imported'); assert.equal(JSON.parse(rej.outcome).action, 'seller_created');
   const status = (await app.call('GET', '/api/integrations/status', { token: admin })).body;
-  assert.equal(status.mdm.skippedWaiting, 1, 'only the rejected seller, put back on the list, is still waiting');
+  assert.equal(status.mdm.skippedWaiting, 0, 'nothing waits any more');
   assert.match(await (await fetch(`${app.base}/integrations`)).text(), /Skipped sellers/);
 });
 

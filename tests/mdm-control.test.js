@@ -197,10 +197,13 @@ test('sellers range: the stores of sellers left out by the range are not recorde
   assert.equal(r.outOfRange.sellers, 1);
   assert.deepEqual((await prisma.mdmRecord.findMany({ where: { kind: 'store' }, orderBy: { mdmRef: 'asc' } })).map((x) => x.mdmRef), ['ST-HERE', 'ST-NEW']);
   assert.equal(r.records.stores, 2); assert.equal(r.outOfRange.stores, 2, 'the old seller\'s store and the store with no seller');
-  // every seller: every store, as before
+  // every seller: the stores of every seller brought in, and stores with no seller, as before
   await ctl.saveRanges(U.admin, { sellers: { mode: 'all' } });
-  const all = await sync({ fetchImpl: fakeMdm({ sellers: [], stores: [store('ST-OLD', 'S-OLD', 1), store('ST-NONE', null, 1)] }).fetchImpl });
+  const all = await sync({ fetchImpl: fakeMdm({ sellers: [mdmSeller('S-OLD', '+218915550013', { createdAt: ago(400), updatedAt: ago(2) })],
+    stores: [store('ST-OLD', 'S-OLD', 1), store('ST-NONE', null, 1), store('ST-GONE', 'S-GONE', 1)] }).fetchImpl });
+  assert.equal(all.full, true, 'a new range reads MDM from the beginning');
   assert.equal(all.records.stores, 2); assert.equal(all.outOfRange.stores, 0);
+  assert.equal(await prisma.mdmRecord.count({ where: { kind: 'store', mdmRef: 'ST-GONE' } }), 0, 'the store of a seller never brought in is not recorded');
 });
 
 test('Stop sync acts during the scan of changed orders too, even when none of those sellers is here', async () => {
@@ -227,6 +230,134 @@ test('After Delete all data, a person imported earlier is linked again to the sa
   assert.equal(row.userId, alice.id); assert.equal(row.decision, 'imported');
   assert.equal((await prisma.user.findUnique({ where: { id: alice.id } })).active, false, 'a restriction on MDM reaches the account again');
   assert.equal(await prisma.user.count({ where: { mdmRef: 'U-ALICE' } }), 1, 'no second account');
+});
+
+test('markets rule: only sellers who sell into Libya, Iraq or Lebanon are synced; sellers, stores and fees of Algeria are left out and not recorded', async () => {
+  const DZ = { id: 'c-dz', name: 'Algeria', code: 'DZA' }; const LY = { id: 'c-ly', name: 'Libya', code: 'LBY' }; const IQ = { id: 'c-iq', name: 'Iraq', code: 'IRQ' };
+  const MA = { id: 'c-ma', name: 'Morocco', code: 'MAR' };
+  // a seller here already, placed by an Admin although MDM lists only Algeria for it
+  const placed = await merchant({ seller: true, mdmRef: 'S-PLACED' });
+  // left from an earlier run: a waiting "market" row, a decided one, and the records of an Algerian seller
+  await prisma.mdmSkipped.create({ data: { mdmRef: 'S-DZ', name: 'Algiers Shop', reason: 'Market DZA is not Libya, Iraq or Lebanon.', reasonCode: 'market' } });
+  await prisma.mdmSkipped.create({ data: { mdmRef: 'S-OLDLEFT', name: 'Left', reason: 'x', reasonCode: 'market', decision: 'left_out', decidedAt: new Date() } });
+  await prisma.mdmRecord.create({ data: { kind: 'seller', mdmRef: 'S-DZ', data: '{}' } });
+  await prisma.mdmRecord.create({ data: { kind: 'store', mdmRef: 'ST-DZ-OLD', sellerRef: 'S-DZ', data: '{}' } });
+  const store = (id, seller, country) => ({ trackingId: id, name: id, seller: { trackingId: seller }, country, updatedAt: ago(1) });
+  const mdm = fakeMdm({
+    sellers: [
+      mdmSeller('S-LY', '+218915550021', { joinStatus: 'accepted', joinStatusDate: ago(100) }),                              // lives in Libya, sells in Libya
+      mdmSeller('S-DZ-LY', '+213661234501', { joinStatus: 'accepted', joinStatusDate: ago(100), country: DZ, countries: [DZ, LY] }), // lives in Algeria, sells into Libya
+      mdmSeller('S-MA-IQ', '+212661234502', { country: MA, countries: [IQ], updatedAt: ago(2) }),                             // lives in Morocco, sells into Iraq: a lead
+      mdmSeller('S-DZ', '+213661234503', { joinStatus: 'accepted', country: DZ, countries: [DZ] }),                            // Algeria only
+      mdmSeller('S-MA', '+212661234504', { joinStatus: 'accepted', country: MA, countries: [] }),                              // Morocco only
+      mdmSeller('S-NOCOUNTRY-LY', '+218915550025', { country: null, countries: [], updatedAt: ago(3) }),                     // no country on MDM, a Libyan phone
+      mdmSeller('S-PLACED', placed.contact.phone, { joinStatus: 'accepted', country: DZ, countries: [DZ] }),
+    ],
+    orders: { 'S-LY': 4, 'S-DZ-LY': 5, 'S-PLACED': 9 },
+    stores: [store('ST-LY', 'S-DZ-LY', LY), store('ST-DZ', 'S-DZ-LY', DZ), store('ST-DZ2', 'S-DZ', DZ), store('ST-DZ-OLD', 'S-DZ', DZ), store('ST-NOCOUNTRY', 'S-LY', null)],
+  });
+  const r = await sync({ full: true, fetchImpl: mdm.fetchImpl });
+  // fees left out: Algeria for S-DZ-LY and S-PLACED, Morocco for S-MA-IQ
+  assert.deepEqual(r.outOfRange.markets, { sellers: 2, stores: 3, fees: 3, skippedCleared: 1 });
+  assert.equal(r.sellersCreated, 2); assert.equal(r.leadsCreated, 2); assert.equal(r.updated, 1);
+  assert.equal((await prisma.seller.findUnique({ where: { mdmRef: 'S-DZ-LY' } })).market, 'LY', 'lives in Algeria, sells into Libya: synced, in the Libya book');
+  assert.equal((await prisma.contact.findFirst({ where: { mdmRef: 'S-MA-IQ' } })).country, 'IQ');
+  assert.equal((await prisma.contact.findFirst({ where: { mdmRef: 'S-NOCOUNTRY-LY' } })).country, 'LY');
+  assert.equal((await prisma.seller.findUnique({ where: { mdmRef: 'S-PLACED' } })).totalOrders, 9, 'a seller already here keeps being updated');
+  for (const ref of ['S-DZ', 'S-MA']) {
+    assert.equal(await prisma.contact.count({ where: { mdmRef: ref } }), 0, `${ref}: not brought in`);
+    assert.equal(await prisma.mdmSkipped.count({ where: { mdmRef: ref } }), 0, `${ref}: not on the Skipped list`);
+    assert.equal(await prisma.mdmRecord.count({ where: { OR: [{ mdmRef: ref }, { sellerRef: ref }] } }), 0, `${ref}: nothing recorded, earlier records gone`);
+  }
+  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'S-OLDLEFT' } })).decision, 'left_out', 'a row an Admin decided stays');
+  assert.ok(!mdm.calls.some((c) => c.path === '/api/v2/orders/search' && ['S-DZ', 'S-MA'].includes(c.body?.filters?.sellerId?.[0])), 'no figures read for them');
+  assert.deepEqual((await prisma.mdmRecord.findMany({ where: { kind: 'store' }, orderBy: { mdmRef: 'asc' } })).map((x) => x.mdmRef), ['ST-LY', 'ST-NOCOUNTRY'], 'stores in Algeria are not recorded');
+  assert.deepEqual((await prisma.mdmRecord.findMany({ where: { kind: 'service_fees', sellerRef: 'S-DZ-LY' } })).map((x) => x.mdmRef), ['S-DZ-LY:c-ly'], 'fees only for Libya');
+  assert.ok(!mdm.calls.some((c) => c.path === '/api/sellers/S-DZ-LY/service-fees' && c.query.includes('c-dz')), 'the Algerian fees are not even asked for');
+  const audit = JSON.parse((await prisma.eventLog.findFirst({ where: { action: 'mdm.sync' }, orderBy: { createdAt: 'desc' } })).after);
+  assert.deepEqual(audit.outOfRange.markets, r.outOfRange.markets);
+  // the same run again: still nothing of Algeria
+  const again = await sync({ full: true, fetchImpl: mdm.fetchImpl });
+  assert.equal(again.outOfRange.markets.sellers, 2); assert.equal(again.outOfRange.markets.skippedCleared, 0);
+  assert.equal(await prisma.mdmSkipped.count({ where: { decision: null } }), 0);
+});
+
+test('markets rule, first sync after the update: it reads MDM from the beginning once, so records and waiting Skipped rows of Algerian sellers from earlier runs go', async () => {
+  const DZ = { id: 'c-dz', name: 'Algeria', code: 'DZA' }; const LY = { id: 'c-ly', name: 'Libya', code: 'LBY' };
+  // as the live app is before the update: a completed run, and what it kept of sellers outside the three markets
+  await prisma.integrationRun.create({ data: { kind: 'mdm_sync', status: 'completed', startedAt: new Date(Date.now() - 3_600_000), finishedAt: new Date(Date.now() - 3_500_000) } });
+  await prisma.mdmRecord.create({ data: { kind: 'seller', mdmRef: 'S-DZ-OLD', data: '{}' } });
+  await prisma.mdmRecord.create({ data: { kind: 'store', mdmRef: 'ST-DZ-OLD', sellerRef: 'S-DZ-OLD', data: '{}' } });
+  await prisma.mdmRecord.create({ data: { kind: 'service_fees', mdmRef: 'S-DZ-OLD:c-dz', sellerRef: 'S-DZ-OLD', data: '{}' } });
+  await prisma.mdmSkipped.create({ data: { mdmRef: 'S-DZ-PHONE', name: 'No phone', reason: 'No valid phone.', reasonCode: 'phone' } });
+  await prisma.mdmSkipped.create({ data: { mdmRef: 'S-DZ-REJ', name: 'Rejected', reason: 'Rejected on the platform.', reasonCode: 'rejected' } });
+  await prisma.mdmSkipped.create({ data: { mdmRef: 'S-DZ-DONE', name: 'Decided', reason: 'x', reasonCode: 'rejected', decision: 'left_out', decidedAt: new Date() } });
+  await prisma.mdmSkipped.create({ data: { mdmRef: 'S-LY-REJ', name: 'Libyan rejected', reason: 'Rejected on the platform.', reasonCode: 'rejected' } });
+  const old = ago(30); // not changed on MDM since the last run: an incremental run would not read them
+  const sellers = [
+    mdmSeller('S-DZ-OLD', '+213661234601', { joinStatus: 'accepted', country: DZ, countries: [DZ], updatedAt: old }),
+    mdmSeller('S-DZ-PHONE', '', { country: DZ, countries: [DZ], updatedAt: old }),
+    mdmSeller('S-DZ-REJ', '+213661234603', { joinStatus: 'rejected', country: DZ, countries: [DZ], updatedAt: old }),
+    mdmSeller('S-DZ-DONE', '+213661234604', { joinStatus: 'rejected', country: DZ, countries: [DZ], updatedAt: old }),
+    mdmSeller('S-LY-REJ', '+218915550031', { joinStatus: 'rejected', updatedAt: old }),
+    // the seller record as MDM sends it: stores (Seller.stores, country as MDM writes it) and services by country
+    mdmSeller('S-DZ-LY', '+213661234605', { joinStatus: 'accepted', joinStatusDate: ago(100), country: DZ, countries: [DZ, LY], updatedAt: old,
+      stores: [{ trackingId: 'st1', name: 'Tripoli', country: 'c-ly' }, { trackingId: 'st2', name: 'Algiers', country: 'c-dz' }, { trackingId: 'st3', name: 'Oran', country: 'DZA' }, { trackingId: 'st4', name: 'Benghazi', country: 'LBY' }, { trackingId: 'st5', name: 'Online' }],
+      servicesByCountry: [{ countryId: 'c-ly', services: ['shipping'] }, { countryId: 'c-dz', services: ['shipping'] }],
+      startingAddresses: [{ countryId: 'c-dz', address: 'Algiers' }] }),
+  ];
+  const r = await sync({ fetchImpl: fakeMdm({ sellers }).fetchImpl });
+  assert.equal(r.full, true, 'the first sync after the update reads MDM from the beginning');
+  assert.equal(r.outOfRange.markets.sellers, 4);
+  assert.equal(r.outOfRange.markets.skippedCleared, 2, 'the waiting "phone" and "rejected" rows of the Algerian sellers');
+  assert.equal(await prisma.mdmRecord.count({ where: { OR: [{ mdmRef: { startsWith: 'S-DZ-OLD' } }, { sellerRef: 'S-DZ-OLD' }] } }), 0, 'earlier records of the Algerian seller are gone');
+  assert.deepEqual((await prisma.mdmSkipped.findMany({ orderBy: { mdmRef: 'asc' } })).map((x) => [x.mdmRef, x.decision]), [['S-DZ-DONE', 'left_out'], ['S-LY-REJ', null]],
+    'a row an Admin decided stays; a Libyan seller stays on the list');
+  const kept = JSON.parse((await prisma.mdmRecord.findUnique({ where: { kind_mdmRef: { kind: 'seller', mdmRef: 'S-DZ-LY' } } })).data);
+  assert.deepEqual(kept.stores.map((x) => x.trackingId), ['st1', 'st4', 'st5'], 'stores of the seller in Algeria are not recorded');
+  assert.deepEqual(kept.servicesByCountry.map((x) => x.countryId), ['c-ly'], 'services in Algeria are not recorded');
+  assert.equal(kept.startingAddresses.length, 1, 'where the seller ships from is kept as MDM sends it');
+  assert.equal(JSON.parse((await prisma.appSetting.findUnique({ where: { key: 'mdm.sync' } })).value).marketsRule, 1);
+  assert.equal(await prisma.eventLog.count({ where: { action: 'mdm.sync_markets_rule' } }), 1);
+  // only once: the next run starts from this one
+  const next = await sync({ fetchImpl: fakeMdm({ sellers }).fetchImpl });
+  assert.equal(next.full, false);
+  assert.equal(await prisma.eventLog.count({ where: { action: 'mdm.sync_markets_rule' } }), 1);
+});
+
+test('markets rule: stores with a country as a code or an id, a seller whose market cannot be told, a seller deleted here, a seller outside the date range', async () => {
+  const DZ = { id: 'c-dz', name: 'Algeria', code: 'DZA' }; const LY = { id: 'c-ly', name: 'Libya', code: 'LBY' };
+  // kept by earlier runs: an Algerian seller an Admin deleted here (kept out), and a Libyan seller now outside the date range
+  await prisma.deletedMerchant.create({ data: { kind: 'skipped', mdmRef: 'S-DZ-KO', name: 'Deleted', reason: 'Not our market', batchId: 'b1' } });
+  await prisma.mdmRecord.create({ data: { kind: 'seller', mdmRef: 'S-DZ-KO', data: '{}' } });
+  await prisma.mdmRecord.create({ data: { kind: 'service_fees', mdmRef: 'S-DZ-KO:c-dz', sellerRef: 'S-DZ-KO', data: '{}' } });
+  await prisma.mdmRecord.create({ data: { kind: 'seller', mdmRef: 'S-LY-OLD', data: JSON.stringify({ trackingId: 'S-LY-OLD', stores: [{ trackingId: 'a', country: 'LBY' }, { trackingId: 'b', country: 'DZA' }], servicesByCountry: [{ countryId: 'c-ly' }, { countryId: 'c-dz' }] }) } });
+  await prisma.mdmRecord.create({ data: { kind: 'service_fees', mdmRef: 'S-LY-OLD:c-ly', sellerRef: 'S-LY-OLD', data: '{}' } });
+  await prisma.mdmRecord.create({ data: { kind: 'service_fees', mdmRef: 'S-LY-OLD:c-dz', sellerRef: 'S-LY-OLD', data: '{}' } });
+  await ctl.saveRanges(U.admin, { sellers: { mode: 'recent', days: 30 } });
+  const store = (id, seller, country) => ({ trackingId: id, name: id, seller: { trackingId: seller }, country, updatedAt: ago(1) });
+  const r = await sync({ fetchImpl: fakeMdm({
+    sellers: [
+      mdmSeller('S-DZ-LY', '+213661234701', { joinStatus: 'accepted', joinStatusDate: ago(10), country: DZ, countries: [DZ, LY], createdAt: ago(10), updatedAt: ago(1) }),
+      mdmSeller('S-NOWHERE', '', { country: null, countries: [], createdAt: ago(5), updatedAt: ago(1) }),       // no country, no phone: the market cannot be told
+      mdmSeller('S-DZ-KO', '+213661234702', { country: DZ, countries: [DZ], createdAt: ago(5), updatedAt: ago(1) }),
+      mdmSeller('S-LY-OLD', '+218915550041', { country: LY, countries: [LY, DZ], createdAt: ago(400), updatedAt: ago(1) }),
+    ],
+    stores: [store('ST-CODE', 'S-DZ-LY', 'DZA'), store('ST-ID', 'S-DZ-LY', 'c-dz'), store('ST-OBJ', 'S-DZ-LY', DZ), store('ST-LY-ID', 'S-DZ-LY', 'c-ly'), store('ST-KO', 'S-DZ-KO', null)],
+  }).fetchImpl });
+  assert.deepEqual((await prisma.mdmRecord.findMany({ where: { kind: 'store' } })).map((x) => x.mdmRef), ['ST-LY-ID'], 'Algerian stores are left out whether MDM writes the country as a code, an id or an object');
+  assert.equal(r.outOfRange.markets.stores, 4, 'three Algerian stores, and the store of the Algerian seller deleted here');
+  // a seller whose market cannot be told is not counted as another market: it waits on the Skipped list as before
+  assert.equal((await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'S-NOWHERE' } }))?.reasonCode, 'phone');
+  assert.equal(r.outOfRange.markets.sellers, 0);
+  // the Algerian seller deleted here: still kept out, and nothing of it stays recorded
+  assert.equal(r.keptOut, 1);
+  assert.equal(await prisma.mdmRecord.count({ where: { OR: [{ mdmRef: 'S-DZ-KO' }, { sellerRef: 'S-DZ-KO' }] } }), 0);
+  // the Libyan seller outside the date range: not recorded anew, and what was kept for Algeria goes
+  assert.equal(r.outOfRange.sellers, 1);
+  const old = JSON.parse((await prisma.mdmRecord.findUnique({ where: { kind_mdmRef: { kind: 'seller', mdmRef: 'S-LY-OLD' } } })).data);
+  assert.deepEqual(old.stores.map((x) => x.trackingId), ['a']); assert.deepEqual(old.servicesByCountry.map((x) => x.countryId), ['c-ly']);
+  assert.deepEqual((await prisma.mdmRecord.findMany({ where: { kind: 'service_fees', sellerRef: 'S-LY-OLD' } })).map((x) => x.mdmRef), ['S-LY-OLD:c-ly']);
 });
 
 test('Stop sync pauses the automatic sync until Resume; Sync now still runs once while paused', async () => {

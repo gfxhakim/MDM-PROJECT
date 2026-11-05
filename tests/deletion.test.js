@@ -131,7 +131,8 @@ test('a deleted merchant stays out of the MDM sync and its events until restored
   const mdm = fakeMdm({ sellers: [
     mdmSeller('MDM-S-OUT', phone, { joinStatus: 'accepted' }),
     mdmSeller('MDM-L-IN', '+218917770999', { createdAt: recent }),
-    mdmSeller('MDM-X-FR', '+33612345670', { joinStatus: 'accepted', country: { id: 'c-fr', code: 'FRA' }, countries: [] }),
+    // a skipped seller (rejected on MDM); since 5 Nov 2026 a seller outside Libya, Iraq and Lebanon is not synced at all
+    mdmSeller('MDM-X-REJ', '+218917770998', { joinStatus: 'rejected', createdAt: recent }),
   ] });
   process.env.MDM_API_KEY = 'k';
   let sum;
@@ -148,11 +149,11 @@ test('a deleted merchant stays out of the MDM sync and its events until restored
   assert.match(JSON.stringify(evBody), /Deleted here/);
   assert.equal(await prisma.contact.count({ where: { phone } }), 0);
 
-  // the French seller was kept aside: delete it from the list
-  const sk = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'MDM-X-FR' } });
-  const d = await app.call('POST', '/api/admin/delete', { token: await tok('admin'), body: { kind: 'skipped', ids: [sk.id], reason: 'Not our market' } });
+  // the rejected seller was kept aside: delete it from the list
+  const sk = await prisma.mdmSkipped.findUnique({ where: { mdmRef: 'MDM-X-REJ' } });
+  const d = await app.call('POST', '/api/admin/delete', { token: await tok('admin'), body: { kind: 'skipped', ids: [sk.id], reason: 'Rejected for good' } });
   assert.equal(d.body.done, 1, JSON.stringify(d.body));
-  assert.equal(await prisma.mdmSkipped.count({ where: { mdmRef: 'MDM-X-FR' } }), 0);
+  assert.equal(await prisma.mdmSkipped.count({ where: { mdmRef: 'MDM-X-REJ' } }), 0);
 
   // restore the seller: the next sync brings it back, as a new record
   const out = await prisma.deletedMerchant.findFirst({ where: { mdmRef: 'MDM-S-OUT' } });
@@ -161,9 +162,9 @@ test('a deleted merchant stays out of the MDM sync and its events until restored
   assert.equal(back.body.done, 1);
   process.env.MDM_API_KEY = 'k';
   try { sum = await syncSellers({ full: true, fetchImpl: mdm.fetchImpl }); } finally { delete process.env.MDM_API_KEY; }
-  assert.equal(sum.keptOut ?? 0, 1); // the French seller deleted from the list stays out
+  assert.equal(sum.keptOut ?? 0, 1); // the rejected seller deleted from the list stays out
   assert.equal(await prisma.seller.count({ where: { mdmRef: 'MDM-S-OUT' } }), 1);
-  assert.equal(await prisma.mdmSkipped.count({ where: { mdmRef: 'MDM-X-FR' } }), 0);
+  assert.equal(await prisma.mdmSkipped.count({ where: { mdmRef: 'MDM-X-REJ' } }), 0);
   assert.equal(await prisma.eventLog.count({ where: { action: 'records.restored' } }), 1);
 });
 
